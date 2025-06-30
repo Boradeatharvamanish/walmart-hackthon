@@ -1,0 +1,249 @@
+/* Picking Dashboard Styles */
+.picking-section {
+    margin-bottom: 2rem;
+  }
+  
+  .active-picks-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 1.5rem;
+    margin-top: 1rem;
+  }
+  
+  .picking-card {
+    background: #2d3748;
+    border-radius: 12px;
+    padding: 1.5rem;
+    border: 2px solid #4a5568;
+    transition: all 0.3s ease;
+    min-height: 280px;
+  }
+  
+  .picking-card:hover {
+    border-color: #63b3ed;
+    transform: translateY(-2px);
+    box-shadow: 0 8px 25px rgba(99, 179, 237, 0.15);
+  }
+  
+  .picking-card.idle {
+    background: #1a202c;
+    border-color: #2d3748;
+    opacity: 0.7;
+  }
+  
+  .picker-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1rem;
+    padding-bottom: 0.75rem;
+    border-bottom: 1px solid #4a5568;
+  }
+  
+  .picker-info {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+  
+  .picker-name {
+    font-weight: 600;
+    font-size: 1.1rem;
+    color: #e2e8f0;
+  }
+  
+  .picker-status {
+    font-size: 0.9rem;
+    padding: 0.25rem 0.75rem;
+    border-radius: 20px;
+    font-weight: 500;
+  }
+  
+  .picker-status.active {
+    background-color: #22543d;
+    color: #68d391;
+  }
+  
+  .picker-status.idle {
+    background-color: #2d3748;
+    color: #a0aec0;
+  }
+  
+  .order-info {
+    margin-bottom: 1.5rem;
+  }
+  
+  .order-info h4 {
+    color: #63b3ed;
+    margin-bottom: 0.75rem;
+    font-size: 1.2rem;
+  }
+  
+  .order-items, .order-location {
+    margin-bottom: 0.5rem;
+    color: #cbd5e0;
+    font-size: 0.9rem;
+  }
+  
+  .order-items strong, .order-location strong {
+    color: #e2e8f0;
+  }
+  
+  .progress-section {
+    margin-bottom: 1rem;
+  }
+  
+  .progress-bar {
+    width: 100%;
+    height: 8px;
+    background-color: #4a5568;
+    border-radius: 4px;
+    overflow: hidden;
+    margin-bottom: 0.5rem;
+  }
+  
+  .progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, #48bb78, #38a169);
+    transition: width 0.3s ease;
+    border-radius: 4px;
+  }
+  
+  .progress-text {
+    font-size: 0.9rem;
+    color: #a0aec0;
+    font-weight: 500;
+  }
+  
+  .picking-actions {
+    margin-top: auto;
+  }
+  
+  .idle-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 120px;
+    color: #718096;
+  }
+  
+  .idle-icon {
+    font-size: 2rem;
+    margin-bottom: 0.5rem;
+  }
+  
+  /* Queue Styles */
+  .queue-section {
+    background: #2d3748;
+    border-radius: 12px;
+    padding: 1.5rem;
+    border: 1px solid #4a5568;
+  }
+  
+  .queue-container {
+    margin-top: 1rem;
+  }
+  
+  .queue-list {
+    max-height: 400px;
+    overflow-y: auto;
+  }
+  
+  .queue-item {
+    display: flex;
+    align-items: center;
+    padding: 1rem;
+    background: #1a202c;
+    border-radius: 8px;
+    margin-bottom: 0.75rem;
+    border: 1px solid #2d3748;
+    transition: all 0.2s ease;
+  }
+  
+  .queue-item:hover {
+    background: #2d3748;
+    border-color: #4a5568;
+  }
+  
+  .queue-position {
+    background: #4a5568;
+    color: #e2e8f0;
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 600;
+    margin-right: 1rem;
+    flex-shrink: 0;
+  }
+  
+  .queue-order-info {
+    flex: 1;
+    margin-right: 1rem;
+  }
+  
+  .queue-order-info strong {
+    color: #63b3ed;
+    display: block;
+    margin-bottom: 0.25rem;
+  }
+  
+  .queue-items {
+    color: #a0aec0;
+    font-size: 0.9rem;
+  }
+  
+  .queue-eta {
+    color: #fbb6ce;
+    font-weight: 500;
+    font-size: 0.9rem;
+    background: #553c4e;
+    padding: 0.5rem 1rem;
+    border-radius: 20px;
+  }
+  
+  .empty-queue {
+    text-align: center;
+    color: #718096;
+    padding: 2rem;
+    font-size: 1.1rem;
+  }
+  
+  /* Responsive Design */
+  @media (max-width: 768px) {
+    .active-picks-grid {
+      grid-template-columns: 1fr;
+    }
+    
+    .queue-item {
+      flex-direction: column;
+      text-align: center;
+      gap: 0.75rem;
+    }
+    
+    .queue-position {
+      margin-right: 0;
+    }
+  }
+  
+  /* Custom Scrollbar for Queue */
+  .queue-list::-webkit-scrollbar {
+    width: 6px;
+  }
+  
+  .queue-list::-webkit-scrollbar-track {
+    background: #2d3748;
+    border-radius: 3px;
+  }
+  
+  .queue-list::-webkit-scrollbar-thumb {
+    background: #4a5568;
+    border-radius: 3px;
+  }
+  
+  .queue-list::-webkit-scrollbar-thumb:hover {
+    background: #718096;
+  }

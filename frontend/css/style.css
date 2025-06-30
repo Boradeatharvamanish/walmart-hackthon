@@ -1,0 +1,108 @@
+
+body.dark-theme {
+  background-color: #121212;
+  color: #fff;
+  font-family: Arial, sans-serif;
+  display: flex;
+}
+.sidebar {
+  width: 220px;
+  background: #1f1f1f;
+  padding: 20px;
+  height: 100vh;
+  color: #fff;
+}
+.main {
+  flex: 1;
+  padding: 30px;
+}
+.summary-cards {
+  display: flex;
+  gap: 20px;
+  flex-wrap: wrap;
+  margin-bottom: 30px;
+}
+.summary-cards .card {
+  padding: 20px;
+  min-width: 150px;
+  font-size: 18px;
+}
+
+/* Keep your existing styles and add these for the picking tab integration */
+
+/* Ensure tab navigation works properly */
+.nav-link {
+  transition: all 0.3s ease;
+  border-radius: 8px;
+  margin-bottom: 0.5rem;
+}
+
+.nav-link:hover {
+  background-color: #4a5568;
+  transform: translateX(5px);
+}
+
+.nav-link.active {
+  background-color: #63b3ed;
+  color: #1a202c !important;
+  font-weight: 600;
+}
+
+/* Main content area adjustments */
+.main {
+  transition: all 0.3s ease;
+}
+
+/* Tab content containers */
+#dashboard-tab, #orders-tab, #picking-tab {
+  animation: fadeIn 0.3s ease-in;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Ensure picking tab has proper spacing */
+#picking-tab {
+  padding: 1rem;
+}
+
+#picking-tab h1 {
+  color: #e2e8f0;
+  margin-bottom: 2rem;
+  font-size: 2rem;
+  font-weight: 700;
+}
+
+#picking-tab h2 {
+  color: #cbd5e0;
+  margin-bottom: 1rem;
+  font-size: 1.5rem;
+  font-weight: 600;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+  .sidebar {
+    width: 100%;
+    height: auto;
+    position: relative;
+  }
+  
+  .main {
+    margin-left: 0;
+    padding: 1rem;
+  }
+  
+  .nav {
+    flex-direction: row;
+    justify-content: space-around;
+  }
+  
+  .nav-link {
+    margin-bottom: 0;
+    padding: 0.5rem;
+    font-size: 0.9rem;
+  }
+}
