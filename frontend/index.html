@@ -5,6 +5,7 @@
   <title>Darkstore Manager Dashboard</title>
   <link rel="stylesheet" href="css/style.css">
   <link rel="stylesheet" href="css/picking-dashboard.css">
+  <link rel="stylesheet" href="css/delivery-dashboard.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
   <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-database-compat.js"></script>
@@ -17,10 +18,12 @@
       <li class="nav-item"><a class="nav-link active" href="#" onclick="switchTab('dashboard')">📊 Dashboard</a></li>
       <li class="nav-item"><a class="nav-link" href="#" onclick="switchTab('orders')">📦 Order Management</a></li>
       <li class="nav-item"><a class="nav-link" href="#" onclick="switchTab('picking')">🛒 Picking Dashboard</a></li>
+      <li class="nav-item"><a class="nav-link" href="#" onclick="switchTab('delivery')">🚚 Delivery Dashboard</a></li>
     </ul>
   </div>
 
   <div class="main">
+    <!-- Dashboard Tab -->
     <div id="dashboard-tab">
       <h1>📊 Dashboard Summary</h1>
       <div class="summary-cards">
@@ -30,8 +33,61 @@
         <div class="card bg-success text-white">Delivered: <span id="delivered-count">0</span></div>
         <div class="card bg-danger text-white">Delayed: <span id="delayed-count">0</span></div>
       </div>
+      
+      <!-- Real-time Status Overview -->
+      <div class="status-overview mt-4">
+        <div class="row">
+          <div class="col-md-6">
+            <div class="card bg-dark text-white">
+              <div class="card-header">
+                <h5>🛒 Picking Status</h5>
+              </div>
+              <div class="card-body">
+                <div class="row">
+                  <div class="col-6">
+                    <div class="stat-item">
+                      <span class="stat-label">Active Pickers:</span>
+                      <span class="stat-value" id="active-pickers">0</span>
+                    </div>
+                  </div>
+                  <div class="col-6">
+                    <div class="stat-item">
+                      <span class="stat-label">Available:</span>
+                      <span class="stat-value" id="available-pickers">5</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="col-md-6">
+            <div class="card bg-dark text-white">
+              <div class="card-header">
+                <h5>🚚 Delivery Status</h5>
+              </div>
+              <div class="card-body">
+                <div class="row">
+                  <div class="col-6">
+                    <div class="stat-item">
+                      <span class="stat-label">Active Boys:</span>
+                      <span class="stat-value" id="active-delivery-boys">0</span>
+                    </div>
+                  </div>
+                  <div class="col-6">
+                    <div class="stat-item">
+                      <span class="stat-label">Available:</span>
+                      <span class="stat-value" id="available-delivery-boys">5</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
 
+    <!-- Orders Tab -->
     <div id="orders-tab" style="display:none;">
       <h1>📦 Active Orders</h1>
       <table class="table table-dark table-striped">
@@ -46,12 +102,20 @@
       </table>
     </div>
 
+    <!-- Picking Tab -->
     <div id="picking-tab" style="display:none;">
       <h1>🛒 Picking Dashboard</h1>
       
+      <!-- Control Panel -->
+      <div class="control-panel mb-3">
+        <button class="btn btn-primary" onclick="autoAssignOrders()">🔄 Auto Assign Orders</button>
+        <button class="btn btn-warning" onclick="resetAllPickers()">🔄 Reset All Pickers</button>
+        <button class="btn btn-info" onclick="refreshPickingData()">🔄 Refresh</button>
+      </div>
+      
       <!-- Active Picking Section -->
       <div class="picking-section">
-        <h2>🔄 Active Picks (5/5)</h2>
+        <h2>🔄 Active Picks (<span id="active-picks-count">0</span>/5)</h2>
         <div class="active-picks-grid" id="active-picks-grid">
           <!-- Active picking cards will be populated here -->
         </div>
@@ -59,7 +123,7 @@
 
       <!-- Queue Section -->
       <div class="queue-section mt-4">
-        <h2>⏳ Next in Queue</h2>
+        <h2>⏳ Next in Queue (<span id="queue-count">0</span> orders)</h2>
         <div class="queue-container">
           <div class="queue-list" id="queue-list">
             <!-- Queued orders will be populated here -->
@@ -67,9 +131,88 @@
         </div>
       </div>
     </div>
+
+    <!-- Delivery Tab -->
+    <div id="delivery-tab" style="display:none;">
+      <h1>🚚 Delivery Dashboard</h1>
+      
+      <!-- Control Panel -->
+      <div class="control-panel mb-3">
+        <button class="btn btn-primary" id="assign-delivery-btn">🔄 Auto Assign Deliveries</button>        <button class="btn btn-warning" onclick="resetDeliveryAssignments()">🔄 Reset Assignments</button>
+        <button class="btn btn-info" onclick="refreshDeliveryData()">🔄 Refresh</button>
+        <div class="input-group mt-2" style="width: 300px;">
+          <span class="input-group-text">Max Distance (km):</span>
+          <input type="number" class="form-control" id="max-distance" value="1.0" min="0.5" max="5.0" step="0.1">
+        </div>
+      </div>
+
+      <!-- Delivery Boys Status -->
+      <div class="delivery-boys-section">
+        <h2>👥 Delivery Boys Status</h2>
+        <div class="delivery-boys-grid" id="delivery-boys-grid">
+          <!-- Delivery boys cards will be populated here -->
+        </div>
+      </div>
+
+      <!-- Delivery Assignments -->
+      <div class="delivery-assignments-section mt-4">
+        <h2>📋 Current Assignments</h2>
+        <div class="assignments-container">
+          <div class="row" id="delivery-assignments-row">
+            <!-- Assignment cards will be populated here -->
+          </div>
+        </div>
+      </div>
+
+      <!-- Available Orders for Delivery -->
+      <div class="available-orders-section mt-4">
+        <h2>📦 Orders Ready for Delivery</h2>
+        <div class="orders-ready-container">
+          <div class="table-responsive">
+            <table class="table table-dark table-striped">
+              <thead>
+                <tr>
+                  <th>Order ID</th>
+                  <th>Customer</th>
+                  <th>Address</th>
+                  <th>Status</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="ready-orders-table">
+                <!-- Ready orders will be populated here -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 
+  <!-- Loading Overlay -->
+  <div id="loading-overlay" class="loading-overlay" style="display:none;">
+    <div class="spinner-border text-primary" role="status">
+      <span class="visually-hidden">Loading...</span>
+    </div>
+    <p>Processing...</p>
+  </div>
+
+  <!-- Toast Notifications -->
+  <div class="toast-container position-fixed bottom-0 end-0 p-3">
+    <div id="notification-toast" class="toast" role="alert" aria-live="assertive" aria-atomic="true">
+      <div class="toast-header">
+        <strong class="me-auto">Notification</strong>
+        <button type="button" class="btn-close" data-bs-dismiss="toast"></button>
+      </div>
+      <div class="toast-body" id="toast-message">
+        <!-- Toast message will be populated here -->
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
   <script src="js/dashboard.js"></script>
   <script src="js/picking-dashboard.js"></script>
+  <script src="js/delivery-dashboard.js"></script>
 </body>
 </html>

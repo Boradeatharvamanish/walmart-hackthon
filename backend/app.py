@@ -2,377 +2,240 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS
 import firebase_admin
 from firebase_admin import credentials, db
-import json
 from datetime import datetime
 import os
+import json
+
+# Import the separate manager classes
+from picking_manager import PickingManager
+from delivery_manager import DeliveryManager
 
 app = Flask(__name__)
 CORS(app)
 
-# Initialize Firebase Admin - UPDATE THESE WITH YOUR CREDENTIALS
-try:
-    # Option 1: Using service account key file
-    # cred = credentials.Certificate("path/to/your/serviceAccountKey.json")
 
-    # Option 2: Using environment variable (recommended for production)
-    # Make sure to set GOOGLE_APPLICATION_CREDENTIALS environment variable
-    cred = credentials.ApplicationDefault()
+# Enhanced Firebase initialization with detailed debugging
+def initialize_firebase():
+    """Enhanced Firebase initialization with detailed debugging"""
+    print("🔥 INITIALIZING FIREBASE...")
 
-    firebase_admin.initialize_app(
-        cred,
-        {
-            "databaseURL": "https://your-database-url-default-rtdb.firebaseio.com/"  # Update this URL
-        },
-    )
-    print("Firebase initialized successfully")
-except Exception as e:
-    print(f"Firebase initialization failed: {e}")
-    print("Firebase features will be disabled")
+    try:
+        # Check if Firebase is already initialized
+        if firebase_admin._apps:
+            print("✅ Firebase already initialized")
+            # Test the existing connection
+            try:
+                ref = db.reference("/")
+                test_data = ref.get()
+                print("✅ Existing Firebase connection is working")
+                return True
+            except Exception as e:
+                print(f"❌ Existing Firebase connection failed: {e}")
+                # Clean up and reinitialize
+                firebase_admin.delete_app(firebase_admin.get_app())
 
+        database_url = (
+            "https://walmart-e8353-default-rtdb.asia-southeast1.firebasedatabase.app"
+        )
+        print(f"🔗 Database URL: {database_url}")
 
-class PickingManager:
-    def __init__(self):
-        self.pickers = [
-            {
-                "id": 1,
-                "name": "Alex Kumar",
-                "active": False,
-                "order_id": None,
-                "progress": 0,
-            },
-            {
-                "id": 2,
-                "name": "Priya Sharma",
-                "active": False,
-                "order_id": None,
-                "progress": 0,
-            },
-            {
-                "id": 3,
-                "name": "Raj Patel",
-                "active": False,
-                "order_id": None,
-                "progress": 0,
-            },
-            {
-                "id": 4,
-                "name": "Sarah Khan",
-                "active": False,
-                "order_id": None,
-                "progress": 0,
-            },
-            {
-                "id": 5,
-                "name": "Mike Johnson",
-                "active": False,
-                "order_id": None,
-                "progress": 0,
-            },
+        # Debug current directory and files
+        print(f"📁 Current directory: {os.getcwd()}")
+        json_files = [f for f in os.listdir(".") if f.endswith(".json")]
+        print(f"📁 JSON files in directory: {json_files}")
+
+        # Option 1: Try service account key files in order of preference
+        service_account_files = [
+            "serviceAccountKey.json",
+            "firebase-service-account.json",
+            "service-account-key.json",
+            "firebase-adminsdk.json",  # Common alternative name
         ]
 
-    def get_picker_assignments(self):
-        """Get current picker assignments"""
-        return {
-            "pickers": self.pickers,
-            "active_count": len([p for p in self.pickers if p["active"]]),
-            "available_slots": len([p for p in self.pickers if not p["active"]]),
-        }
+        for key_file in service_account_files:
+            if os.path.exists(key_file):
+                print(f"🔑 Found {key_file}, attempting to use it...")
 
-    def get_unpicked_orders_from_firebase(self):
-        """Get list of orders that are not yet picked from Firebase"""
-        try:
-            if not firebase_admin._apps:
-                return []
+                try:
+                    # First, validate the JSON file
+                    with open(key_file, "r") as f:
+                        cred_data = json.load(f)
 
-            # Get all orders from Firebase
-            ref = db.reference("orders")
-            orders = ref.get()
-
-            if not orders:
-                return []
-
-            unpicked_orders = []
-            for order_key, order_data in orders.items():
-                # Check if order status is not 'picked' - but include 'picking' status orders
-                # because we need to filter them out separately in the assignment logic
-                current_status = order_data.get("current_status", "").lower()
-                if current_status != "picked":
-                    unpicked_orders.append(
-                        {
-                            "order_id": order_key,
-                            "order_data": order_data,
-                            "current_status": current_status,
-                        }
-                    )
-
-            return unpicked_orders
-
-        except Exception as e:
-            print(f"Error fetching unpicked orders: {e}")
-            return []
-
-    def update_order_status_in_firebase(self, order_id, status):
-        """Update order status in Firebase"""
-        try:
-            if not firebase_admin._apps:
-                print("Firebase not initialized, cannot update order status")
-                return False
-
-            # Update the order status in Firebase
-            ref = db.reference(f"orders/{order_id}")
-            order_data = ref.get()
-
-            if order_data:
-                # Update current_status and add timestamp
-                updates = {
-                    "current_status": status,
-                    "last_updated": datetime.now().isoformat(),
-                }
-
-                # Add picking completion timestamp if status is 'picked'
-                if status.lower() == "picked":
-                    updates["picked_at"] = datetime.now().isoformat()
-                elif status.lower() == "picking":
-                    updates["picking_started_at"] = datetime.now().isoformat()
-
-                ref.update(updates)
-                print(f"Order {order_id} status updated to '{status}' in Firebase")
-                return True
-            else:
-                print(f"Order {order_id} not found in Firebase")
-                return False
-
-        except Exception as e:
-            print(f"Error updating order status in Firebase: {e}")
-            return False
-
-    def assign_order_to_picker(self, order_id=None, picker_id=None):
-        """Assign an order to an available picker with strict one-to-one mapping"""
-        try:
-            # Get all currently assigned orders to prevent duplicates
-            currently_assigned_orders = [
-                p["order_id"] for p in self.pickers if p["active"] and p["order_id"]
-            ]
-
-            # If specific order_id provided, check if it's available
-            if order_id:
-                # Check if order is already assigned to someone
-                if order_id in currently_assigned_orders:
-                    picker_name = next(
-                        (p["name"] for p in self.pickers if p["order_id"] == order_id),
-                        "Unknown",
-                    )
-                    return {
-                        "success": False,
-                        "message": f"Order {order_id} is already assigned to {picker_name}",
-                    }
-
-                # Check if order exists and is unpicked in Firebase
-                unpicked_orders = self.get_unpicked_orders_from_firebase()
-                available_order_ids = [order["order_id"] for order in unpicked_orders]
-
-                if order_id not in available_order_ids:
-                    return {
-                        "success": False,
-                        "message": f"Order {order_id} is not available for picking (already picked or doesn't exist)",
-                    }
-            else:
-                # Get next available unpicked order that's not currently assigned
-                unpicked_orders = self.get_unpicked_orders_from_firebase()
-                available_orders = [
-                    order
-                    for order in unpicked_orders
-                    if order["order_id"] not in currently_assigned_orders
-                ]
-
-                if not available_orders:
-                    return {
-                        "success": False,
-                        "message": "No unpicked orders available for assignment",
-                    }
-
-                # Get the first available order
-                order_id = available_orders[0]["order_id"]
-
-            # Find available picker
-            available_picker = None
-            if picker_id:
-                available_picker = next(
-                    (
-                        p
-                        for p in self.pickers
-                        if p["id"] == picker_id and not p["active"]
-                    ),
-                    None,
-                )
-                if not available_picker:
-                    return {
-                        "success": False,
-                        "message": f"Picker {picker_id} is not available or doesn't exist",
-                    }
-            else:
-                available_picker = next(
-                    (p for p in self.pickers if not p["active"]), None
-                )
-
-            if not available_picker:
-                return {"success": False, "message": "No available pickers"}
-
-            # Double-check: Ensure this picker is not already active (safety check)
-            if available_picker["active"]:
-                return {
-                    "success": False,
-                    "message": f"Picker {available_picker['name']} is already active",
-                }
-
-            # Update order status to 'picking' in Firebase
-            firebase_updated = self.update_order_status_in_firebase(order_id, "picking")
-
-            # Assign the order to picker
-            available_picker["active"] = True
-            available_picker["order_id"] = order_id
-            available_picker["progress"] = 0
-
-            return {
-                "success": True,
-                "picker": available_picker,
-                "firebase_updated": firebase_updated,
-                "message": f"Order {order_id} assigned to {available_picker['name']}",
-            }
-
-        except Exception as e:
-            print(f"Error in assign_order_to_picker: {e}")
-            return {"success": False, "message": f"Assignment failed: {str(e)}"}
-
-    def update_picker_progress(self, picker_id, progress):
-        """Update picker progress"""
-        picker = next((p for p in self.pickers if p["id"] == picker_id), None)
-        if picker and picker["active"]:
-            picker["progress"] = min(100, max(0, progress))
-            return {"success": True, "picker": picker}
-        return {"success": False, "message": "Picker not found or not active"}
-
-    def complete_picking(self, picker_id):
-        """Complete picking for a picker and update Firebase status to 'picked'"""
-        try:
-            picker = next((p for p in self.pickers if p["id"] == picker_id), None)
-            if not picker or not picker["active"]:
-                return {"success": False, "message": "Picker not found or not active"}
-
-            completed_order = picker["order_id"]
-
-            # Update order status to 'picked' in Firebase
-            firebase_updated = self.update_order_status_in_firebase(
-                completed_order, "picked"
-            )
-
-            # Free up the picker FIRST before checking for auto-assignment
-            picker["active"] = False
-            picker["order_id"] = None
-            picker["progress"] = 0
-
-            # NOW check if there are more orders waiting (after freeing up the picker)
-            queue_status = self.get_next_available_order()
-            auto_assignment = None
-
-            if (
-                queue_status["success"]
-                and queue_status["orders_in_queue"] > 0
-                and queue_status["available_pickers"] > 0
-            ):
-                # Get orders that are truly available (not being picked by anyone)
-                available_orders = queue_status["available_orders"]
-                if available_orders:
-                    # Double-check: Get FRESH list of currently assigned orders after freeing up this picker
-                    currently_assigned_orders = [
-                        p["order_id"]
-                        for p in self.pickers
-                        if p["active"] and p["order_id"]
+                    # Check for required fields
+                    required_fields = ["private_key", "client_email", "project_id"]
+                    missing_fields = [
+                        field for field in required_fields if field not in cred_data
                     ]
 
-                    # Find first order that is NOT currently assigned to any active picker
-                    next_order_id = None
-                    for order in available_orders:
-                        if order["order_id"] not in currently_assigned_orders:
-                            next_order_id = order["order_id"]
-                            break
-
-                    if next_order_id:
-                        # Try to auto-assign the truly available order to this now-free picker
-                        auto_assignment = self.assign_order_to_picker(
-                            order_id=next_order_id, picker_id=picker_id
+                    if missing_fields:
+                        print(
+                            f"❌ {key_file} is missing required fields: {missing_fields}"
                         )
+                        continue
 
-            return {
-                "success": True,
-                "completed_order": completed_order,
-                "picker": picker,
-                "firebase_updated": firebase_updated,
-                "auto_assignment": auto_assignment,
-                "message": f"Order {completed_order} completed by {picker['name']} and marked as 'picked' in Firebase",
-            }
+                    print(f"✅ {key_file} has all required fields")
+                    print(f"🆔 Project ID: {cred_data.get('project_id')}")
 
-        except Exception as e:
-            print(f"Error in complete_picking: {e}")
-            return {"success": False, "message": f"Completion failed: {str(e)}"}
+                    # Initialize Firebase
+                    cred = credentials.Certificate(key_file)
+                    firebase_admin.initialize_app(cred, {"databaseURL": database_url})
 
-    def get_next_available_order(self):
-        """Get the next available order for picking with queue management"""
-        try:
-            unpicked_orders = self.get_unpicked_orders_from_firebase()
+                    print(f"✅ Firebase initialized successfully with {key_file}")
 
-            # Get orders that are currently being picked
-            currently_assigned_orders = [
-                p["order_id"] for p in self.pickers if p["active"] and p["order_id"]
-            ]
+                    # Test the connection
+                    print("🧪 Testing database connection...")
+                    ref = db.reference("/")
+                    test_data = ref.get()
 
-            # Filter out orders that are currently being picked
-            available_orders = [
-                order
-                for order in unpicked_orders
-                if order["order_id"] not in currently_assigned_orders
-            ]
+                    if test_data is not None:
+                        print(f"✅ Database connection successful!")
+                        if isinstance(test_data, dict):
+                            print(f"📊 Root database keys: {list(test_data.keys())}")
+                        else:
+                            print(f"📊 Database data type: {type(test_data)}")
+                        return True
+                    else:
+                        print(
+                            "⚠️  Database connection successful but database appears empty"
+                        )
+                        return True
 
-            # Get picker statistics
-            total_pickers = len(self.pickers)
-            active_pickers = len([p for p in self.pickers if p["active"]])
-            available_pickers = total_pickers - active_pickers
+                except json.JSONDecodeError as e:
+                    print(f"❌ {key_file} is not valid JSON: {e}")
+                    continue
+                except FileNotFoundError:
+                    print(f"❌ {key_file} not found (this shouldn't happen)")
+                    continue
+                except Exception as e:
+                    print(f"❌ Failed to initialize Firebase with {key_file}: {e}")
+                    print(f"   Error type: {type(e).__name__}")
 
-            return {
-                "success": True,
-                "available_orders": available_orders,
-                "orders_in_queue": len(available_orders),
-                "total_pickers": total_pickers,
-                "active_pickers": active_pickers,
-                "available_pickers": available_pickers,
-                "can_assign_more": available_pickers > 0 and len(available_orders) > 0,
-                "queue_status": {
-                    "orders_waiting": max(0, len(available_orders) - available_pickers),
-                    "next_assignable": min(len(available_orders), available_pickers),
-                },
-            }
+                    # Clean up failed initialization
+                    if firebase_admin._apps:
+                        try:
+                            firebase_admin.delete_app(firebase_admin.get_app())
+                        except:
+                            pass
+                    continue
 
-        except Exception as e:
-            print(f"Error getting next available order: {e}")
-            return {
-                "success": False,
-                "message": f"Failed to get available orders: {str(e)}",
-            }
+        # Option 2: Try environment variable
+        google_creds_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+        if google_creds_path:
+            print(
+                f"🌍 Trying Application Default Credentials from: {google_creds_path}"
+            )
+
+            if os.path.exists(google_creds_path):
+                try:
+                    cred = credentials.ApplicationDefault()
+                    firebase_admin.initialize_app(cred, {"databaseURL": database_url})
+                    print(
+                        "✅ Firebase initialized successfully with Application Default Credentials"
+                    )
+
+                    # Test the connection
+                    print("🧪 Testing database connection...")
+                    ref = db.reference("/")
+                    test_data = ref.get()
+                    print("✅ Database connection successful!")
+                    return True
+
+                except Exception as e:
+                    print(
+                        f"❌ Failed to initialize Firebase with Application Default Credentials: {e}"
+                    )
+            else:
+                print(
+                    f"❌ GOOGLE_APPLICATION_CREDENTIALS points to non-existent file: {google_creds_path}"
+                )
+
+        # If we get here, all attempts failed
+        print("\n❌ ALL FIREBASE INITIALIZATION ATTEMPTS FAILED")
+        print("\n💡 TROUBLESHOOTING CHECKLIST:")
+        print(
+            "1. ✅ Check that your service account JSON file is in the project root directory"
+        )
+        print(
+            "2. ✅ Verify the JSON file is valid and contains private_key, client_email, project_id"
+        )
+        print("3. ✅ Ensure the database URL is correct for your Firebase project")
+        print("4. ✅ Confirm your Firebase project has Realtime Database enabled")
+        print("5. ✅ Check that your service account has Database Admin permissions")
+        print("6. ✅ Try downloading a fresh service account key from Firebase Console")
+        print("7. ✅ Verify you're using the correct Firebase project")
+        print("8. ✅ Check your internet connection and firewall settings")
+
+        return False
+
+    except Exception as e:
+        print(f"❌ Unexpected error during Firebase initialization: {e}")
+        print(f"   Error type: {type(e).__name__}")
+        import traceback
+
+        traceback.print_exc()
+        return False
 
 
-# Global picking manager instance
+def test_firebase_connection():
+    """Test Firebase connection with detailed feedback"""
+    print("\n🧪 TESTING FIREBASE CONNECTION...")
+
+    try:
+        # Test basic connection
+        ref = db.reference("/")
+        root_data = ref.get()
+        print("✅ Basic connection test passed")
+
+        # Test specific paths your app uses
+        test_paths = ["/orders", "/delivery_agents", "/pickers"]
+
+        for path in test_paths:
+            try:
+                ref = db.reference(path)
+                data = ref.get()
+                count = len(data) if data and isinstance(data, dict) else 0
+                print(f"✅ {path}: {count} items")
+            except Exception as e:
+                print(f"⚠️  {path}: Error accessing - {e}")
+
+        return True
+
+    except Exception as e:
+        print(f"❌ Firebase connection test failed: {e}")
+        return False
+
+
+# Initialize Firebase
+print("🚀 Starting Firebase initialization...")
+firebase_initialized = initialize_firebase()
+
+if firebase_initialized:
+    print("🎉 Firebase initialization completed successfully!")
+    test_firebase_connection()
+else:
+    print("⚠️  Firebase initialization failed - some features may not work")
+
+# Initialize managers
+print("📋 Initializing managers...")
 picking_manager = PickingManager()
+delivery_manager = DeliveryManager()
+print("✅ Managers initialized successfully")
 
 
 @app.route("/")
 def home():
-    return "Flask backend is running with Picking Management and Firebase integration."
+    firebase_status = "✅ Connected" if firebase_initialized else "❌ Not Connected"
+    return f"Flask backend is running with Picking Management and Delivery Management. Firebase: {firebase_status}"
 
 
+# === PICKING MANAGEMENT ROUTES ===
 @app.route("/api/picking/status", methods=["GET"])
 def get_picking_status():
     """Get current picking status"""
     try:
+        if not firebase_initialized:
+            return jsonify({"success": False, "error": "Firebase not initialized"}), 500
+
         return jsonify(
             {"success": True, "data": picking_manager.get_picker_assignments()}
         )
@@ -384,6 +247,9 @@ def get_picking_status():
 def get_available_orders():
     """Get list of available orders for picking"""
     try:
+        if not firebase_initialized:
+            return jsonify({"success": False, "error": "Firebase not initialized"}), 500
+
         result = picking_manager.get_next_available_order()
         return jsonify(result)
     except Exception as e:
@@ -394,6 +260,9 @@ def get_available_orders():
 def assign_order():
     """Assign an order to a picker"""
     try:
+        if not firebase_initialized:
+            return jsonify({"success": False, "error": "Firebase not initialized"}), 500
+
         data = request.get_json()
         order_id = data.get(
             "order_id"
@@ -415,6 +284,9 @@ def assign_order():
 def update_progress():
     """Update picker progress"""
     try:
+        if not firebase_initialized:
+            return jsonify({"success": False, "error": "Firebase not initialized"}), 500
+
         data = request.get_json()
         picker_id = data.get("picker_id")
         progress = data.get("progress")
@@ -442,6 +314,9 @@ def update_progress():
 def complete_picking():
     """Complete picking for a picker and update Firebase"""
     try:
+        if not firebase_initialized:
+            return jsonify({"success": False, "error": "Firebase not initialized"}), 500
+
         data = request.get_json()
         picker_id = data.get("picker_id")
 
@@ -463,6 +338,9 @@ def complete_picking():
 def auto_assign_orders():
     """Auto-assign available orders to available pickers with proper queue management"""
     try:
+        if not firebase_initialized:
+            return jsonify({"success": False, "error": "Firebase not initialized"}), 500
+
         # Get current status
         status = picking_manager.get_next_available_order()
         if not status["success"]:
@@ -532,36 +410,133 @@ def auto_assign_orders():
 
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/picking/reset", methods=["POST"])
+def reset_all_pickers():
     """Reset all picker assignments and update Firebase statuses"""
     try:
-        # Reset Firebase statuses for currently picked orders
-        for picker in picking_manager.pickers:
-            if picker["active"] and picker["order_id"]:
-                # Reset order status back to previous state (you might want to customize this)
-                picking_manager.update_order_status_in_firebase(
-                    picker["order_id"], "pending"
-                )
+        if not firebase_initialized:
+            return jsonify({"success": False, "error": "Firebase not initialized"}), 500
 
-            picker["active"] = False
-            picker["order_id"] = None
-            picker["progress"] = 0
+        result = picking_manager.reset_all_pickers()
 
-        return jsonify(
-            {
-                "success": True,
-                "message": "All pickers reset and Firebase statuses updated",
-                "data": picking_manager.get_picker_assignments(),
-            }
-        )
+        if result["success"]:
+            return jsonify(result)
+        else:
+            return jsonify(result), 400
 
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
 
-@app.route("/api/orders/update-status", methods=["POST"])
-def update_order_status():
-    """Update order status in Firebase"""
+# === DELIVERY MANAGEMENT ROUTES ===
+@app.route("/api/delivery/status", methods=["GET"])
+def get_delivery_status():
+    """Get current delivery status"""
     try:
+        if not firebase_initialized:
+            return jsonify({"success": False, "error": "Firebase not initialized"}), 500
+
+        result = delivery_manager.get_delivery_boys_status()
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/delivery/assignments", methods=["GET"])
+def get_delivery_assignments():
+    """Get detailed delivery assignments"""
+    try:
+        if not firebase_initialized:
+            return jsonify({"success": False, "error": "Firebase not initialized"}), 500
+
+        result = delivery_manager.get_delivery_assignments()
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/delivery/assign", methods=["POST"])
+def assign_delivery_orders():
+    """Assign orders to delivery boys with batching"""
+    try:
+        print("🔍 Starting delivery assignment...")
+
+        if not firebase_initialized:
+            return jsonify({"success": False, "error": "Firebase not initialized"}), 500
+
+        data = request.get_json() or {}
+        print(f"🔍 Request data: {data}")
+
+        max_distance = data.get("max_distance_km", 1.0)
+        print(f"🔍 Max distance: {max_distance}")
+
+        print("🔍 Calling assign_orders_with_batching...")
+        result = delivery_manager.assign_orders_with_batching(max_distance)
+        print(f"🔍 Result: {result}")
+
+        if result["success"]:
+            return jsonify(result)
+        else:
+            return jsonify(result), 400
+
+    except Exception as e:
+        print(f"❌ Exception in route: {e}")
+        import traceback
+
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/delivery/assign-single", methods=["POST"])
+def assign_single_delivery_order():
+    """Assign a single order to a delivery boy"""
+    try:
+        if not firebase_initialized:
+            return jsonify({"success": False, "error": "Firebase not initialized"}), 500
+
+        data = request.get_json()
+        order_id = data.get("order_id")
+        delivery_boy_id = data.get("delivery_boy_id")
+
+        result = delivery_manager.assign_order_to_delivery_boy(
+            order_id, delivery_boy_id
+        )
+
+        if result["success"]:
+            return jsonify(result)
+        else:
+            return jsonify(result), 400
+
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/delivery/reset", methods=["POST"])
+def reset_delivery_assignments():
+    """Reset all delivery assignments"""
+    try:
+        if not firebase_initialized:
+            return jsonify({"success": False, "error": "Firebase not initialized"}), 500
+
+        result = delivery_manager.reset_delivery_assignments()
+
+        if result["success"]:
+            return jsonify(result)
+        else:
+            return jsonify(result), 400
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/delivery/update-status", methods=["POST"])
+def update_delivery_status():
+    """Update delivery status for a specific order"""
+    try:
+        if not firebase_initialized:
+            return jsonify({"success": False, "error": "Firebase not initialized"}), 500
+
         data = request.get_json()
         order_id = data.get("order_id")
         status = data.get("status")
@@ -574,16 +549,317 @@ def update_order_status():
                 400,
             )
 
-        # Update Firebase
-        firebase_updated = picking_manager.update_order_status_in_firebase(
-            order_id, status
+        # Validate status
+        valid_statuses = [
+            "pending",
+            "delivery_boy_assigned",
+            "out_for_delivery",
+            "delivered",
+            "failed",
+        ]
+        if status not in valid_statuses:
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "error": f"Invalid status. Must be one of: {', '.join(valid_statuses)}",
+                    }
+                ),
+                400,
+            )
+
+        result = delivery_manager.update_delivery_status(order_id, status)
+
+        if result["success"]:
+            return jsonify(result)
+        else:
+            return jsonify(result), 400
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/delivery/available-orders", methods=["GET"])
+def get_available_delivery_orders():
+    """Get list of available orders for delivery"""
+    try:
+        if not firebase_initialized:
+            return jsonify({"success": False, "error": "Firebase not initialized"}), 500
+
+        result = delivery_manager.get_next_available_order()
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/delivery/complete", methods=["POST"])
+def complete_delivery():
+    """Complete delivery for a specific order"""
+    try:
+        if not firebase_initialized:
+            return jsonify({"success": False, "error": "Firebase not initialized"}), 500
+
+        data = request.get_json()
+        delivery_boy_id = data.get("delivery_boy_id")
+        order_id = data.get("order_id")
+
+        if not delivery_boy_id or not order_id:
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "error": "delivery_boy_id and order_id are required",
+                    }
+                ),
+                400,
+            )
+
+        result = delivery_manager.complete_delivery(delivery_boy_id, order_id)
+
+        if result["success"]:
+            return jsonify(result)
+        else:
+            return jsonify(result), 400
+
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/delivery/boy/<boy_id>/orders", methods=["GET"])
+def get_delivery_boy_orders(boy_id):
+    """Get orders assigned to a specific delivery boy"""
+    try:
+        if not firebase_initialized:
+            return jsonify({"success": False, "error": "Firebase not initialized"}), 500
+
+        # Find delivery boy in delivery_agents list
+        delivery_boy = next(
+            (
+                agent
+                for agent in delivery_manager.delivery_agents
+                if agent["id"] == boy_id
+            ),
+            None,
         )
+
+        if not delivery_boy:
+            return (
+                jsonify(
+                    {"success": False, "error": f"Delivery boy {boy_id} not found"}
+                ),
+                404,
+            )
+
+        assignments = delivery_manager.get_delivery_assignments()
+        if not assignments["success"]:
+            return jsonify(assignments), 500
+
+        boy_data = assignments["assignments"].get(f"agent_{boy_id}", {})
+        return jsonify({"success": True, "delivery_boy_id": boy_id, "data": boy_data})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/delivery/performance", methods=["GET"])
+def get_delivery_performance():
+    """Get delivery agent performance metrics"""
+    try:
+        if not firebase_initialized:
+            return jsonify({"success": False, "error": "Firebase not initialized"}), 500
+
+        result = delivery_manager.get_delivery_agent_performance()
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/delivery/refresh", methods=["POST"])
+def refresh_delivery_agents():
+    """Refresh delivery agents data from Firebase"""
+    try:
+        if not firebase_initialized:
+            return jsonify({"success": False, "error": "Firebase not initialized"}), 500
+
+        delivery_manager.refresh_delivery_agents()
+        result = delivery_manager.get_delivery_boys_status()
+        return jsonify(
+            {
+                "success": True,
+                "message": "Delivery agents refreshed successfully",
+                "data": result,
+            }
+        )
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+# === GENERAL UTILITY ROUTES ===
+@app.route("/api/orders", methods=["GET"])
+def get_all_orders():
+    """Get all orders from Firebase"""
+    try:
+        if not firebase_initialized:
+            return jsonify({"success": False, "error": "Firebase not initialized"}), 500
+
+        orders_ref = db.reference("orders")
+        orders = orders_ref.get() or {}
+
+        return jsonify({"success": True, "orders": orders, "total_orders": len(orders)})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/orders/<order_id>", methods=["GET"])
+def get_order_details(order_id):
+    """Get details of a specific order"""
+    try:
+        if not firebase_initialized:
+            return jsonify({"success": False, "error": "Firebase not initialized"}), 500
+
+        order_ref = db.reference(f"orders/{order_id}")
+        order_data = order_ref.get()
+
+        if not order_data:
+            return (
+                jsonify({"success": False, "error": f"Order {order_id} not found"}),
+                404,
+            )
+
+        return jsonify({"success": True, "order_id": order_id, "data": order_data})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/dashboard", methods=["GET"])
+def get_dashboard_data():
+    """Get comprehensive dashboard data"""
+    try:
+        if not firebase_initialized:
+            return jsonify({"success": False, "error": "Firebase not initialized"}), 500
+
+        # Get picking status
+        picking_status = picking_manager.get_picker_assignments()
+
+        # Get delivery status
+        delivery_status = delivery_manager.get_delivery_boys_status()
+
+        # Get orders summary
+        orders_summary = {"total_orders": 0, "firebase_connected": firebase_initialized}
+        if firebase_initialized:
+            try:
+                orders_ref = db.reference("orders")
+                orders = orders_ref.get() or {}
+                orders_summary = {
+                    "total_orders": len(orders),
+                    "firebase_connected": True,
+                    "orders_by_status": {},
+                }
+
+                # Count orders by status
+                for order_data in orders.values():
+                    status = order_data.get("current_status", "unknown")
+                    orders_summary["orders_by_status"][status] = (
+                        orders_summary["orders_by_status"].get(status, 0) + 1
+                    )
+
+            except Exception as e:
+                orders_summary["firebase_error"] = str(e)
 
         return jsonify(
             {
                 "success": True,
-                "firebase_updated": firebase_updated,
-                "message": f"Order {order_id} status updated to {status}",
+                "timestamp": datetime.now().isoformat(),
+                "picking": picking_status,
+                "delivery": delivery_status,
+                "orders": orders_summary,
+            }
+        )
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+# === ERROR HANDLERS ===
+@app.errorhandler(404)
+def not_found(error):
+    return jsonify({"success": False, "error": "Endpoint not found"}), 404
+
+
+@app.errorhandler(500)
+def internal_error(error):
+    return jsonify({"success": False, "error": "Internal server error"}), 500
+
+
+@app.route("/debug/firebase", methods=["GET"])
+def debug_firebase():
+    """Enhanced Firebase debug endpoint"""
+    try:
+        debug_info = {
+            "firebase_initialized": firebase_initialized,
+            "firebase_apps_count": len(firebase_admin._apps),
+            "current_directory": os.getcwd(),
+            "json_files": [f for f in os.listdir(".") if f.endswith(".json")],
+            "environment_credentials": os.getenv("GOOGLE_APPLICATION_CREDENTIALS"),
+            "database_url": "https://darkstoremanager-d30e5-default-rtdb.asia-southeast1.firebasedatabase.app",
+        }
+
+        if not firebase_initialized:
+            debug_info["error"] = "Firebase not initialized"
+            debug_info["suggestions"] = [
+                "Check if serviceAccountKey.json exists in project root",
+                "Verify Firebase database URL is correct",
+                "Check service account file permissions",
+                "Ensure Realtime Database is enabled in Firebase Console",
+                "Verify service account has proper permissions",
+            ]
+            return jsonify(debug_info), 500
+
+        # Try to connect to database
+        orders_ref = db.reference("orders")
+        orders = orders_ref.get()
+
+        debug_info.update(
+            {
+                "success": True,
+                "orders_count": len(orders) if orders else 0,
+                "sample_order_keys": list(orders.keys())[:3] if orders else [],
+                "database_connection": "✅ Working",
+            }
+        )
+
+        return jsonify(debug_info)
+
+    except Exception as e:
+        return (
+            jsonify(
+                {
+                    "firebase_initialized": firebase_initialized,
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                    "firebase_apps": (
+                        len(firebase_admin._apps) if firebase_admin._apps else 0
+                    ),
+                }
+            ),
+            500,
+        )
+
+
+@app.route("/debug/delivery-agents", methods=["GET"])
+def debug_delivery_agents():
+    """Debug delivery agents from Firebase"""
+    try:
+        if not firebase_initialized:
+            return jsonify({"success": False, "error": "Firebase not initialized"}), 500
+
+        # Get delivery agents from Firebase
+        agents_ref = db.reference("delivery_agents")
+        agents = agents_ref.get()
+
+        return jsonify(
+            {
+                "success": True,
+                "firebase_agents": agents,
+                "local_agents": delivery_manager.delivery_agents,
+                "total_local_agents": len(delivery_manager.delivery_agents),
             }
         )
 
@@ -591,7 +867,75 @@ def update_order_status():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+# === HEALTH CHECK ENDPOINT ===
+@app.route("/health", methods=["GET"])
+def health_check():
+    """Health check endpoint"""
+    return jsonify(
+        {
+            "status": "healthy",
+            "timestamp": datetime.now().isoformat(),
+            "firebase_connected": firebase_initialized,
+            "services": {
+                "picking_manager": "✅ Ready",
+                "delivery_manager": "✅ Ready",
+                "firebase": (
+                    "✅ Connected" if firebase_initialized else "❌ Not Connected"
+                ),
+            },
+        }
+    )
+
+
+# === MAIN APPLICATION RUNNER ===
 if __name__ == "__main__":
-    print("Starting Flask application...")
-    print("Make sure to update Firebase configuration before running in production!")
-    app.run(debug=True, port=5000)
+    print("🚀 Starting Flask server...")
+    print(
+        f"🔥 Firebase Status: {'✅ Connected' if firebase_initialized else '❌ Not Connected'}"
+    )
+    print("\n📋 Available endpoints:")
+    print("  GET  /                              - Home page")
+    print("  GET  /debug/firebase                - Debug Firebase connection")
+    print("  GET  /debug/delivery-agents         - Debug delivery agents")
+    print("")
+    print("=== PICKING MANAGEMENT ===")
+    print("  GET  /api/picking/status            - Get picking status")
+    print("  GET  /api/picking/available-orders  - Get available orders")
+    print("  POST /api/picking/assign            - Assign order to picker")
+    print("  POST /api/picking/progress          - Update picker progress")
+    print("  POST /api/picking/complete          - Complete picking")
+    print("  POST /api/picking/auto-assign       - Auto-assign orders")
+    print("  POST /api/picking/reset             - Reset all pickers")
+    print("")
+    print("=== DELIVERY MANAGEMENT ===")
+    print("  GET  /api/delivery/status           - Get delivery status")
+    print("  GET  /api/delivery/assignments      - Get delivery assignments")
+    print("  GET  /api/delivery/available-orders - Get available delivery orders")
+    print(
+        "  POST /api/delivery/assign           - Assign orders to delivery boys (batching)"
+    )
+    print("  POST /api/delivery/assign-single    - Assign single order to delivery boy")
+    print("  POST /api/delivery/reset            - Reset delivery assignments")
+    print("  POST /api/delivery/update-status    - Update delivery status")
+    print("  POST /api/delivery/complete         - Complete delivery")
+    print(
+        "  POST /api/delivery/refresh          - Refresh delivery agents from Firebase"
+    )
+    print("  GET  /api/delivery/boy/<id>/orders  - Get delivery boy orders")
+    print("  GET  /api/delivery/performance      - Get delivery performance metrics")
+    print("")
+    print("=== UTILITY ROUTES ===")
+    print("  GET  /api/orders                    - Get all orders")
+    print("  GET  /api/orders/<id>               - Get order details")
+    print("  GET  /api/dashboard                 - Get dashboard data")
+    print("")
+
+    if not firebase_initialized:
+        print("⚠  WARNING: Firebase not initialized!")
+        print("   Please ensure you have one of these files:")
+        print("   - serviceAccountKey.json")
+        print("   - firebase-service-account.json")
+        print("   - service-account-key.json")
+        print("   Or set GOOGLE_APPLICATION_CREDENTIALS environment variable")
+
+    app.run(debug=True, host="0.0.0.0", port=5000)

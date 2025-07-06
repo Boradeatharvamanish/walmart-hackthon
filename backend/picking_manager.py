@@ -1,10 +1,9 @@
-import json
-from datetime import datetime, timedelta
-import threading
-import time
+import firebase_admin
+from firebase_admin import credentials, db
+from datetime import datetime
 
 
-class AdvancedPickingManager:
+class PickingManager:
     def __init__(self):
         self.pickers = [
             {
@@ -13,10 +12,6 @@ class AdvancedPickingManager:
                 "active": False,
                 "order_id": None,
                 "progress": 0,
-                "assigned_at": None,
-                "estimated_completion": None,
-                "items_picked": [],
-                "current_location": "Counter",
             },
             {
                 "id": 2,
@@ -24,10 +19,6 @@ class AdvancedPickingManager:
                 "active": False,
                 "order_id": None,
                 "progress": 0,
-                "assigned_at": None,
-                "estimated_completion": None,
-                "items_picked": [],
-                "current_location": "Counter",
             },
             {
                 "id": 3,
@@ -35,10 +26,6 @@ class AdvancedPickingManager:
                 "active": False,
                 "order_id": None,
                 "progress": 0,
-                "assigned_at": None,
-                "estimated_completion": None,
-                "items_picked": [],
-                "current_location": "Counter",
             },
             {
                 "id": 4,
@@ -46,10 +33,6 @@ class AdvancedPickingManager:
                 "active": False,
                 "order_id": None,
                 "progress": 0,
-                "assigned_at": None,
-                "estimated_completion": None,
-                "items_picked": [],
-                "current_location": "Counter",
             },
             {
                 "id": 5,
@@ -57,302 +40,316 @@ class AdvancedPickingManager:
                 "active": False,
                 "order_id": None,
                 "progress": 0,
-                "assigned_at": None,
-                "estimated_completion": None,
-                "items_picked": [],
-                "current_location": "Counter",
             },
         ]
 
-        self.order_queue = []
-        self.completed_orders = []
-        self.picking_history = []
-
-        # Store layout for optimal picking paths
-        self.store_layout = {
-            "Dairy": ["Milk", "Butter", "Eggs", "Paneer"],
-            "Grocery": ["Bread", "Soap", "Juice"],
-            "Fresh": ["Vegetables", "Fruits"],
-            "Frozen": ["Ice Cream", "Frozen Foods"],
+    def get_picker_assignments(self):
+        """Get current picker assignments"""
+        return {
+            "pickers": self.pickers,
+            "active_count": len([p for p in self.pickers if p["active"]]),
+            "available_slots": len([p for p in self.pickers if not p["active"]]),
         }
 
-        # Estimated time per item (in minutes)
-        self.item_pick_times = {
-            "Milk": 1,
-            "Butter": 1,
-            "Eggs": 2,
-            "Paneer": 2,
-            "Bread": 1,
-            "Soap": 1,
-            "Juice": 1,
-            "Vegetables": 3,
-            "Fruits": 3,
-            "Ice Cream": 1,
-            "Frozen Foods": 2,
-        }
+    def get_unpicked_orders_from_firebase(self):
+        """Get list of orders that are not yet picked from Firebase"""
+        try:
+            if not firebase_admin._apps:
+                return []
 
-        self.lock = threading.Lock()
+            # Get all orders from Firebase
+            ref = db.reference("orders")
+            orders = ref.get()
 
-    def generate_optimal_path(self, items):
-        """Generate optimal picking path based on store layout"""
-        path = []
-        sections_needed = []
+            if not orders:
+                return []
 
-        for item in items:
-            for section, section_items in self.store_layout.items():
-                if any(
-                    section_item.lower() in item.lower()
-                    for section_item in section_items
-                ):
-                    if section not in sections_needed:
-                        sections_needed.append(section)
-                    break
+            unpicked_orders = []
+            for order_key, order_data in orders.items():
+                # Check if order status is not 'picked' - but include 'picking' status orders
+                # because we need to filter them out separately in the assignment logic
+                current_status = order_data.get("current_status", "").lower()
+                if current_status != "picked":
+                    unpicked_orders.append(
+                        {
+                            "order_id": order_key,
+                            "order_data": order_data,
+                            "current_status": current_status,
+                        }
+                    )
 
-        # Optimal section order (minimize backtracking)
-        optimal_order = ["Dairy", "Fresh", "Grocery", "Frozen"]
-        ordered_sections = [
-            section for section in optimal_order if section in sections_needed
-        ]
+            return unpicked_orders
 
-        for section in ordered_sections:
-            section_items = [
-                item
-                for item in items
-                if any(
-                    section_item.lower() in item.lower()
-                    for section_item in self.store_layout[section]
-                )
+        except Exception as e:
+            print(f"Error fetching unpicked orders: {e}")
+            return []
+
+    def update_order_status_in_firebase(self, order_id, status):
+        """Update order status in Firebase"""
+        try:
+            if not firebase_admin._apps:
+                print("Firebase not initialized, cannot update order status")
+                return False
+
+            # Update the order status in Firebase
+            ref = db.reference(f"orders/{order_id}")
+            order_data = ref.get()
+
+            if order_data:
+                # Update current_status and add timestamp
+                updates = {
+                    "current_status": status,
+                    "last_updated": datetime.now().isoformat(),
+                }
+
+                # Add picking completion timestamp if status is 'picked'
+                if status.lower() == "picked":
+                    updates["picked_at"] = datetime.now().isoformat()
+                elif status.lower() == "picking":
+                    updates["picking_started_at"] = datetime.now().isoformat()
+
+                ref.update(updates)
+                print(f"Order {order_id} status updated to '{status}' in Firebase")
+                return True
+            else:
+                print(f"Order {order_id} not found in Firebase")
+                return False
+
+        except Exception as e:
+            print(f"Error updating order status in Firebase: {e}")
+            return False
+
+    def assign_order_to_picker(self, order_id=None, picker_id=None):
+        """Assign an order to an available picker with strict one-to-one mapping"""
+        try:
+            # Get all currently assigned orders to prevent duplicates
+            currently_assigned_orders = [
+                p["order_id"] for p in self.pickers if p["active"] and p["order_id"]
             ]
-            path.extend([(section, item) for item in section_items])
 
-        return path
+            # If specific order_id provided, check if it's available
+            if order_id:
+                # Check if order is already assigned to someone
+                if order_id in currently_assigned_orders:
+                    picker_name = next(
+                        (p["name"] for p in self.pickers if p["order_id"] == order_id),
+                        "Unknown",
+                    )
+                    return {
+                        "success": False,
+                        "message": f"Order {order_id} is already assigned to {picker_name}",
+                    }
 
-    def estimate_picking_time(self, items):
-        """Estimate total picking time for items"""
-        total_time = 0
-        for item in items:
-            # Default time if item not in mapping
-            base_time = 2
-            for mapped_item, time_val in self.item_pick_times.items():
-                if mapped_item.lower() in item.lower():
-                    base_time = time_val
-                    break
-            total_time += base_time
+                # Check if order exists and is unpicked in Firebase
+                unpicked_orders = self.get_unpicked_orders_from_firebase()
+                available_order_ids = [order["order_id"] for order in unpicked_orders]
 
-        # Add base travel time between sections
-        sections = set()
-        for item in items:
-            for section, section_items in self.store_layout.items():
-                if any(
-                    section_item.lower() in item.lower()
-                    for section_item in section_items
-                ):
-                    sections.add(section)
-                    break
+                if order_id not in available_order_ids:
+                    return {
+                        "success": False,
+                        "message": f"Order {order_id} is not available for picking (already picked or doesn't exist)",
+                    }
+            else:
+                # Get next available unpicked order that's not currently assigned
+                unpicked_orders = self.get_unpicked_orders_from_firebase()
+                available_orders = [
+                    order
+                    for order in unpicked_orders
+                    if order["order_id"] not in currently_assigned_orders
+                ]
 
-        travel_time = len(sections) * 0.5  # 30 seconds between sections
-        return total_time + travel_time
+                if not available_orders:
+                    return {
+                        "success": False,
+                        "message": "No unpicked orders available for assignment",
+                    }
 
-    def assign_order_to_best_picker(self, order_data):
-        """Assign order to the best available picker"""
-        with self.lock:
-            available_pickers = [p for p in self.pickers if not p["active"]]
+                # Get the first available order
+                order_id = available_orders[0]["order_id"]
 
-            if not available_pickers:
+            # Find available picker
+            available_picker = None
+            if picker_id:
+                available_picker = next(
+                    (
+                        p
+                        for p in self.pickers
+                        if p["id"] == picker_id and not p["active"]
+                    ),
+                    None,
+                )
+                if not available_picker:
+                    return {
+                        "success": False,
+                        "message": f"Picker {picker_id} is not available or doesn't exist",
+                    }
+            else:
+                available_picker = next(
+                    (p for p in self.pickers if not p["active"]), None
+                )
+
+            if not available_picker:
+                return {"success": False, "message": "No available pickers"}
+
+            # Double-check: Ensure this picker is not already active (safety check)
+            if available_picker["active"]:
                 return {
                     "success": False,
-                    "message": "No available pickers - order added to queue",
+                    "message": f"Picker {available_picker['name']} is already active",
                 }
 
-            # For now, just take the first available picker
-            # Could implement more sophisticated assignment logic here
-            picker = available_pickers[0]
+            # Update order status to 'picking' in Firebase
+            firebase_updated = self.update_order_status_in_firebase(order_id, "picking")
 
-            items = order_data.get("order_items", [])
-            estimated_time = self.estimate_picking_time(items)
-            optimal_path = self.generate_optimal_path(items)
-
-            picker.update(
-                {
-                    "active": True,
-                    "order_id": order_data.get("order_id"),
-                    "progress": 0,
-                    "assigned_at": datetime.now(),
-                    "estimated_completion": datetime.now()
-                    + timedelta(minutes=estimated_time),
-                    "items_picked": [],
-                    "current_location": "Counter",
-                    "optimal_path": optimal_path,
-                    "total_items": len(items),
-                    "estimated_time": estimated_time,
-                }
-            )
+            # Assign the order to picker
+            available_picker["active"] = True
+            available_picker["order_id"] = order_id
+            available_picker["progress"] = 0
 
             return {
                 "success": True,
-                "picker": picker,
-                "estimated_time": estimated_time,
-                "optimal_path": optimal_path,
+                "picker": available_picker,
+                "firebase_updated": firebase_updated,
+                "message": f"Order {order_id} assigned to {available_picker['name']}",
             }
 
-    def update_picker_location_and_progress(
-        self, picker_id, location=None, item_picked=None
-    ):
-        """Update picker's current location and progress"""
-        with self.lock:
-            picker = next((p for p in self.pickers if p["id"] == picker_id), None)
+        except Exception as e:
+            print(f"Error in assign_order_to_picker: {e}")
+            return {"success": False, "message": f"Assignment failed: {str(e)}"}
 
+    def update_picker_progress(self, picker_id, progress):
+        """Update picker progress"""
+        picker = next((p for p in self.pickers if p["id"] == picker_id), None)
+        if picker and picker["active"]:
+            picker["progress"] = min(100, max(0, progress))
+            return {"success": True, "picker": picker}
+        return {"success": False, "message": "Picker not found or not active"}
+
+    def complete_picking(self, picker_id):
+        """Complete picking for a picker and update Firebase status to 'picked'"""
+        try:
+            picker = next((p for p in self.pickers if p["id"] == picker_id), None)
             if not picker or not picker["active"]:
                 return {"success": False, "message": "Picker not found or not active"}
 
-            if location:
-                picker["current_location"] = location
+            completed_order = picker["order_id"]
 
-            if item_picked:
-                if item_picked not in picker["items_picked"]:
-                    picker["items_picked"].append(item_picked)
-                    picker["progress"] = (
-                        len(picker["items_picked"]) / picker["total_items"]
-                    ) * 100
-
-            return {"success": True, "picker": picker, "progress": picker["progress"]}
-
-    def complete_order(self, picker_id):
-        """Complete an order and free up the picker"""
-        with self.lock:
-            picker = next((p for p in self.pickers if p["id"] == picker_id), None)
-
-            if not picker or not picker["active"]:
-                return {"success": False, "message": "Picker not found or not active"}
-
-            completed_order = {
-                "order_id": picker["order_id"],
-                "picker_id": picker_id,
-                "picker_name": picker["name"],
-                "completed_at": datetime.now(),
-                "assigned_at": picker["assigned_at"],
-                "actual_time": (datetime.now() - picker["assigned_at"]).total_seconds()
-                / 60,
-                "estimated_time": picker.get("estimated_time", 0),
-                "items_picked": picker["items_picked"],
-            }
-
-            self.completed_orders.append(completed_order)
-            self.picking_history.append(completed_order)
-
-            # Reset picker
-            picker.update(
-                {
-                    "active": False,
-                    "order_id": None,
-                    "progress": 0,
-                    "assigned_at": None,
-                    "estimated_completion": None,
-                    "items_picked": [],
-                    "current_location": "Counter",
-                    "optimal_path": [],
-                    "total_items": 0,
-                    "estimated_time": 0,
-                }
+            # Update order status to 'picked' in Firebase
+            firebase_updated = self.update_order_status_in_firebase(
+                completed_order, "picked"
             )
+
+            # Free up the picker FIRST before checking for auto-assignment
+            picker["active"] = False
+            picker["order_id"] = None
+            picker["progress"] = 0
+
+            # NOW check if there are more orders waiting (after freeing up the picker)
+            queue_status = self.get_next_available_order()
+            auto_assignment = None
+
+            if (
+                queue_status["success"]
+                and queue_status["orders_in_queue"] > 0
+                and queue_status["available_pickers"] > 0
+            ):
+                # Get orders that are truly available (not being picked by anyone)
+                available_orders = queue_status["available_orders"]
+                if available_orders:
+                    # Double-check: Get FRESH list of currently assigned orders after freeing up this picker
+                    currently_assigned_orders = [
+                        p["order_id"]
+                        for p in self.pickers
+                        if p["active"] and p["order_id"]
+                    ]
+
+                    # Find first order that is NOT currently assigned to any active picker
+                    next_order_id = None
+                    for order in available_orders:
+                        if order["order_id"] not in currently_assigned_orders:
+                            next_order_id = order["order_id"]
+                            break
+
+                    if next_order_id:
+                        # Try to auto-assign the truly available order to this now-free picker
+                        auto_assignment = self.assign_order_to_picker(
+                            order_id=next_order_id, picker_id=picker_id
+                        )
 
             return {
                 "success": True,
                 "completed_order": completed_order,
                 "picker": picker,
+                "firebase_updated": firebase_updated,
+                "auto_assignment": auto_assignment,
+                "message": f"Order {completed_order} completed by {picker['name']} and marked as 'picked' in Firebase",
             }
 
-    def get_dashboard_data(self):
-        """Get comprehensive dashboard data"""
-        with self.lock:
-            active_picks = []
-            for picker in self.pickers:
-                if picker["active"]:
-                    pick_data = picker.copy()
-                    # Calculate time remaining
-                    if pick_data["estimated_completion"]:
-                        time_remaining = (
-                            pick_data["estimated_completion"] - datetime.now()
-                        ).total_seconds() / 60
-                        pick_data["time_remaining"] = max(0, time_remaining)
-                    else:
-                        pick_data["time_remaining"] = 0
+        except Exception as e:
+            print(f"Error in complete_picking: {e}")
+            return {"success": False, "message": f"Completion failed: {str(e)}"}
 
-                    # Format datetime objects for JSON serialization
-                    if pick_data["assigned_at"]:
-                        pick_data["assigned_at"] = pick_data["assigned_at"].isoformat()
-                    if pick_data["estimated_completion"]:
-                        pick_data["estimated_completion"] = pick_data[
-                            "estimated_completion"
-                        ].isoformat()
+    def get_next_available_order(self):
+        """Get the next available order for picking with queue management"""
+        try:
+            unpicked_orders = self.get_unpicked_orders_from_firebase()
 
-                    active_picks.append(pick_data)
-
-            return {
-                "active_picks": active_picks,
-                "available_pickers": len([p for p in self.pickers if not p["active"]]),
-                "queue_length": len(self.order_queue),
-                "completed_today": len(
-                    [
-                        order
-                        for order in self.completed_orders
-                        if order["completed_at"].date() == datetime.now().date()
-                    ]
-                ),
-                "average_pick_time": self.calculate_average_pick_time(),
-                "picker_efficiency": self.calculate_picker_efficiency(),
-            }
-
-    def calculate_average_pick_time(self):
-        """Calculate average picking time from history"""
-        if not self.picking_history:
-            return 0
-
-        recent_picks = self.picking_history[-20:]  # Last 20 picks
-        total_time = sum(pick["actual_time"] for pick in recent_picks)
-        return total_time / len(recent_picks)
-
-    def calculate_picker_efficiency(self):
-        """Calculate efficiency metrics for each picker"""
-        efficiency = {}
-
-        for picker in self.pickers:
-            picker_history = [
-                pick
-                for pick in self.picking_history
-                if pick["picker_id"] == picker["id"]
+            # Get orders that are currently being picked
+            currently_assigned_orders = [
+                p["order_id"] for p in self.pickers if p["active"] and p["order_id"]
             ]
 
-            if picker_history:
-                avg_actual = sum(pick["actual_time"] for pick in picker_history) / len(
-                    picker_history
-                )
-                avg_estimated = sum(
-                    pick["estimated_time"] for pick in picker_history
-                ) / len(picker_history)
+            # Filter out orders that are currently being picked
+            available_orders = [
+                order
+                for order in unpicked_orders
+                if order["order_id"] not in currently_assigned_orders
+            ]
 
-                efficiency[picker["name"]] = {
-                    "orders_completed": len(picker_history),
-                    "avg_time": avg_actual,
-                    "efficiency_ratio": (
-                        avg_estimated / avg_actual if avg_actual > 0 else 0
-                    ),
-                    "on_time_percentage": len(
-                        [
-                            p
-                            for p in picker_history
-                            if p["actual_time"] <= p["estimated_time"] * 1.1
-                        ]
-                    )
-                    / len(picker_history)
-                    * 100,
-                }
-            else:
-                efficiency[picker["name"]] = {
-                    "orders_completed": 0,
-                    "avg_time": 0,
-                    "efficiency_ratio": 0,
-                    "on_time_percentage": 0,
-                }
+            # Get picker statistics
+            total_pickers = len(self.pickers)
+            active_pickers = len([p for p in self.pickers if p["active"]])
+            available_pickers = total_pickers - active_pickers
 
-        return efficiency
+            return {
+                "success": True,
+                "available_orders": available_orders,
+                "orders_in_queue": len(available_orders),
+                "total_pickers": total_pickers,
+                "active_pickers": active_pickers,
+                "available_pickers": available_pickers,
+                "can_assign_more": available_pickers > 0 and len(available_orders) > 0,
+                "queue_status": {
+                    "orders_waiting": max(0, len(available_orders) - available_pickers),
+                    "next_assignable": min(len(available_orders), available_pickers),
+                },
+            }
+
+        except Exception as e:
+            print(f"Error getting next available order: {e}")
+            return {
+                "success": False,
+                "message": f"Failed to get available orders: {str(e)}",
+            }
+
+    def reset_all_pickers(self):
+        """Reset all picker assignments and update Firebase statuses"""
+        try:
+            # Reset Firebase statuses for currently picked orders
+            for picker in self.pickers:
+                if picker["active"] and picker["order_id"]:
+                    # Reset order status back to previous state (you might want to customize this)
+                    self.update_order_status_in_firebase(picker["order_id"], "pending")
+
+                picker["active"] = False
+                picker["order_id"] = None
+                picker["progress"] = 0
+
+            return {
+                "success": True,
+                "message": "All pickers reset and Firebase statuses updated",
+                "data": self.get_picker_assignments(),
+            }
+
+        except Exception as e:
+            return {"success": False, "message": f"Reset failed: {str(e)}"}

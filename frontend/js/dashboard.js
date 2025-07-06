@@ -51,25 +51,50 @@ ordersRef.on("value", snapshot => {
   }
 });
 
+// Enhanced tab switching function
 function switchTab(tab) {
-  // Hide all tabs
-  document.getElementById("dashboard-tab").style.display = "none";
-  document.getElementById("orders-tab").style.display = "none";
-  document.getElementById("picking-tab").style.display = "none";
+  console.log(`🔄 Switching to tab: ${tab}`);
   
+  // Hide all tabs
+  const tabs = ['dashboard', 'orders', 'picking', 'delivery'];
+  tabs.forEach(tabName => {
+      const tabElement = document.getElementById(`${tabName}-tab`);
+      if (tabElement) {
+          tabElement.style.display = 'none';
+      }
+  });
+
   // Remove active class from all nav links
   document.querySelectorAll('.nav-link').forEach(link => {
-    link.classList.remove('active');
+      link.classList.remove('active');
   });
-  
+
   // Show selected tab
-  document.getElementById(tab + "-tab").style.display = "block";
-  
+  const selectedTab = document.getElementById(`${tab}-tab`);
+  if (selectedTab) {
+      selectedTab.style.display = 'block';
+      console.log(`✅ Tab ${tab} is now visible`);
+  } else {
+      console.error(`❌ Tab ${tab} not found`);
+  }
+
   // Add active class to clicked nav link
-  event.target.classList.add('active');
-  
-  // Initialize picking dashboard when switching to it
+  if (event && event.target) {
+      event.target.classList.add('active');
+  }
+
+  // Initialize specific dashboards when switching to them
   if (tab === 'picking' && window.initializePickingDashboard) {
-    window.initializePickingDashboard();
+      window.initializePickingDashboard();
+  } else if (tab === 'delivery') {
+      // Initialize delivery dashboard
+      if (window.initializeDeliveryDashboard) {
+          window.initializeDeliveryDashboard();
+      } else {
+          console.warn('⚠️ Delivery dashboard initialization function not found');
+      }
   }
 }
+
+// Make sure switchTab is globally available
+window.switchTab = switchTab;
