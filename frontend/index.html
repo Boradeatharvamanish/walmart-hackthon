@@ -135,32 +135,12 @@
     <!-- Delivery Tab -->
     <div id="delivery-tab" style="display:none;">
       <h1>🚚 Delivery Dashboard</h1>
-      
-      <!-- Control Panel -->
-      <div class="control-panel mb-3">
-        <button class="btn btn-primary" id="assign-delivery-btn">🔄 Auto Assign Deliveries</button>        <button class="btn btn-warning" onclick="resetDeliveryAssignments()">🔄 Reset Assignments</button>
-        <button class="btn btn-info" onclick="refreshDeliveryData()">🔄 Refresh</button>
-        <div class="input-group mt-2" style="width: 300px;">
-          <span class="input-group-text">Max Distance (km):</span>
-          <input type="number" class="form-control" id="max-distance" value="1.0" min="0.5" max="5.0" step="0.1">
-        </div>
-      </div>
 
       <!-- Delivery Boys Status -->
       <div class="delivery-boys-section">
         <h2>👥 Delivery Boys Status</h2>
         <div class="delivery-boys-grid" id="delivery-boys-grid">
           <!-- Delivery boys cards will be populated here -->
-        </div>
-      </div>
-
-      <!-- Delivery Assignments -->
-      <div class="delivery-assignments-section mt-4">
-        <h2>📋 Current Assignments</h2>
-        <div class="assignments-container">
-          <div class="row" id="delivery-assignments-row">
-            <!-- Assignment cards will be populated here -->
-          </div>
         </div>
       </div>
 

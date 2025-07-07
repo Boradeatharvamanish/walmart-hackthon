@@ -1,4 +1,4 @@
-// delivery-dashboard.js - Separate delivery dashboard functionality
+// delivery-dashboard.js - Updated to match backend API endpoints
 console.log('🚚 Loading Delivery Dashboard...');
 
 // Delivery Dashboard Class
@@ -6,7 +6,6 @@ class DeliveryDashboard {
     constructor() {
         this.apiBaseUrl = 'http://localhost:5000/api';
         this.deliveryBoys = [];
-        this.assignments = {};
         this.readyOrders = [];
         this.refreshInterval = null;
         this.isLoading = false;
@@ -16,30 +15,9 @@ class DeliveryDashboard {
 
     init() {
         console.log('🚀 Initializing Delivery Dashboard...');
-        this.setupEventListeners();
         this.startAutoRefresh();
         // Initial data load
         this.refreshDeliveryData();
-    }
-
-    setupEventListeners() {
-        // Auto-refresh when tab becomes active
-        document.addEventListener('visibilitychange', () => {
-            if (!document.hidden && this.isCurrentTab('delivery')) {
-                this.refreshDeliveryData();
-            }
-        });
-
-        // Setup the assign delivery button
-        const assignBtn = document.getElementById('assign-delivery-btn');
-        if (assignBtn) {
-            assignBtn.addEventListener('click', () => {
-                console.log('🔄 Assign button clicked');
-                this.assignDeliveryOrders();
-            });
-        } else {
-            console.warn('⚠️ Assign delivery button not found');
-        }
     }
 
     isCurrentTab(tabName) {
@@ -132,31 +110,27 @@ class DeliveryDashboard {
         try {
             console.log('🔄 Refreshing delivery data...');
             
-            // Fetch all delivery-related data
-            const [statusResponse, assignmentsResponse, ordersResponse] = await Promise.all([
+            // Fetch delivery status and picked orders using correct API endpoints
+            const [deliveryStatusResponse, pickedOrdersResponse] = await Promise.all([
                 this.makeApiCall('/delivery/status'),
-                this.makeApiCall('/delivery/assignments'),
-                this.makeApiCall('/delivery/available-orders')
+                this.makeApiCall('/delivery/picked-orders')
             ]);
 
             console.log('📊 API Responses:', {
-                status: statusResponse,
-                assignments: assignmentsResponse,
-                orders: ordersResponse
+                deliveryStatus: deliveryStatusResponse,
+                pickedOrders: pickedOrdersResponse
             });
 
-            if (statusResponse.success) {
-                this.deliveryBoys = statusResponse.delivery_boys || {};
+            if (deliveryStatusResponse.success) {
+                // Combine available and busy agents
+                const availableAgents = deliveryStatusResponse.data.available_agents || [];
+                const busyAgents = deliveryStatusResponse.data.busy_agents || [];
+                this.deliveryBoys = [...availableAgents, ...busyAgents];
                 this.updateDeliveryBoysGrid();
             }
 
-            if (assignmentsResponse.success) {
-                this.assignments = assignmentsResponse.assignments || {};
-                this.updateAssignmentsView();
-            }
-
-            if (ordersResponse.success) {
-                this.readyOrders = ordersResponse.available_orders || [];
+            if (pickedOrdersResponse.success) {
+                this.readyOrders = pickedOrdersResponse.data.picked_orders || [];
                 this.updateReadyOrdersTable();
             }
 
@@ -175,9 +149,7 @@ class DeliveryDashboard {
 
         console.log('🔄 Updating delivery boys grid...', this.deliveryBoys);
 
-        const deliveryBoysArray = Object.values(this.deliveryBoys);
-        
-        if (deliveryBoysArray.length === 0) {
+        if (this.deliveryBoys.length === 0) {
             container.innerHTML = `
                 <div class="empty-state">
                     <h4>No Delivery Boys Available</h4>
@@ -187,120 +159,68 @@ class DeliveryDashboard {
             return;
         }
 
-        container.innerHTML = deliveryBoysArray.map(boy => {
-            const isAvailable = boy.assigned_orders.length === 0;
+        container.innerHTML = this.deliveryBoys.map(deliveryBoy => {
+            const isAvailable = deliveryBoy.status === 'available';
             const statusClass = isAvailable ? 'available' : 'busy';
             const statusText = isAvailable ? 'Available' : 'Busy';
+            const currentOrdersCount = deliveryBoy.order_assigned ? deliveryBoy.order_assigned.length : 0;
 
             return `
                 <div class="delivery-boy-card ${statusClass} fade-in">
                     <div class="delivery-boy-header">
-                        <div>
-                            <h5 class="delivery-boy-name">${boy.name}</h5>
-                            <p class="delivery-boy-id">${boy.id}</p>
+                        <div class="delivery-boy-avatar">
+                            <div class="avatar-circle ${statusClass}">
+                                ${deliveryBoy.name ? deliveryBoy.name.charAt(0).toUpperCase() : 'D'}
+                            </div>
+                        </div>
+                        <div class="delivery-boy-info">
+                            <h5 class="delivery-boy-name">${deliveryBoy.name || 'Unknown'}</h5>
+                            <p class="delivery-boy-id">ID: ${deliveryBoy.id || 'N/A'}</p>
+                            <p class="delivery-boy-phone">📞 ${deliveryBoy.phone || 'N/A'}</p>
                         </div>
                         <div class="delivery-boy-status ${statusClass}">
+                            <span class="status-dot"></span>
                             ${statusText}
                         </div>
                     </div>
-                    <div class="delivery-boy-orders">
-                        <h6>Assigned Orders</h6>
-                        <div class="order-count">${boy.assigned_orders.length}</div>
-                        ${boy.assigned_orders.length > 0 ? 
-                            `<div class="order-list">
-                                ${boy.assigned_orders.slice(0, 3).map(orderId => 
+                    
+                    <div class="delivery-boy-stats">
+                        <div class="stat-item">
+                            <span class="stat-label">Assigned Orders</span>
+                            <span class="stat-value">${currentOrdersCount}</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Location</span>
+                            <span class="stat-value">${deliveryBoy.current_location ? 'Available' : 'Unknown'}</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Status</span>
+                            <span class="stat-value">${deliveryBoy.status || 'N/A'}</span>
+                        </div>
+                    </div>
+
+                    <div class="delivery-boy-location">
+                        <p class="location-text">📍 ${deliveryBoy.current_location && deliveryBoy.current_location.address ? deliveryBoy.current_location.address : 'Location not available'}</p>
+                    </div>
+
+                    ${currentOrdersCount > 0 ? `
+                        <div class="delivery-boy-orders">
+                            <h6>Assigned Orders</h6>
+                            <div class="order-list">
+                                ${deliveryBoy.order_assigned.slice(0, 3).map(orderId => 
                                     `<div class="order-tag">${orderId}</div>`
                                 ).join('')}
-                                ${boy.assigned_orders.length > 3 ? 
-                                    `<div class="order-tag">+${boy.assigned_orders.length - 3} more</div>` : ''
+                                ${currentOrdersCount > 3 ? 
+                                    `<div class="order-tag">+${currentOrdersCount - 3} more</div>` : ''
                                 }
-                            </div>` : ''
-                        }
-                    </div>
-                </div>
-            `;
-        }).join('');
-    }
-
-    updateAssignmentsView() {
-        const container = document.getElementById('delivery-assignments-row');
-        if (!container) {
-            console.warn('⚠️ delivery-assignments-row element not found');
-            return;
-        }
-
-        console.log('🔄 Updating assignments view...', this.assignments);
-
-        const assignmentsArray = Object.entries(this.assignments);
-        
-        if (assignmentsArray.length === 0) {
-            container.innerHTML = `
-                <div class="col-12">
-                    <div class="empty-state">
-                        <h4>No Active Assignments</h4>
-                        <p>No orders are currently assigned to delivery boys.</p>
-                    </div>
-                </div>
-            `;
-            return;
-        }
-
-        container.innerHTML = assignmentsArray.map(([boyId, assignment]) => {
-            const boy = assignment.delivery_boy;
-            const orders = assignment.orders || [];
-            
-            if (orders.length === 0) return '';
-
-            const totalAmount = orders.reduce((sum, order) => sum + (order.total_amount || 0), 0);
-
-            return `
-                <div class="col-lg-6 col-md-12 mb-4">
-                    <div class="assignment-card fade-in">
-                        <div class="assignment-header">
-                            <div class="assignment-boy-info">
-                                <h5>${boy.name}</h5>
-                                <p>${boy.id}</p>
-                            </div>
-                            <div class="assignment-stats">
-                                <div class="stat-item">
-                                    <div class="stat-value">${orders.length}</div>
-                                    <div class="stat-label">Orders</div>
-                                </div>
-                                <div class="stat-item">
-                                    <div class="stat-value">₹${totalAmount}</div>
-                                    <div class="stat-label">Total</div>
-                                </div>
                             </div>
                         </div>
-                        <div class="orders-list">
-                            ${orders.map(order => `
-                                <div class="order-item ${order.batched_with ? 'batched' : 'primary'}">
-                                    <div class="order-header">
-                                        <div class="order-id">${order.order_id}</div>
-                                        <div class="order-type ${order.batched_with ? 'batched' : 'primary'}">
-                                            ${order.batched_with ? 'Batched' : 'Primary'}
-                                        </div>
-                                    </div>
-                                    <div class="order-details">
-                                        <p><strong>Customer:</strong> ${order.customer_name || 'N/A'}</p>
-                                        <p><strong>Address:</strong> ${order.delivery_address || 'N/A'}</p>
-                                        <p><strong>Amount:</strong> ₹${order.total_amount || 0}</p>
-                                        ${order.distance_from_primary ? 
-                                            `<p><strong>Distance:</strong> <span class="distance-badge">${order.distance_from_primary} km</span></p>` 
-                                            : ''
-                                        }
-                                    </div>
-                                    <div class="order-actions">
-                                        <button class="btn btn-sm btn-success" onclick="window.deliveryDashboard.updateDeliveryStatus('${order.order_id}', 'delivered')">
-                                            Mark Delivered
-                                        </button>
-                                        <button class="btn btn-sm btn-warning" onclick="window.deliveryDashboard.updateDeliveryStatus('${order.order_id}', 'failed')">
-                                            Mark Failed
-                                        </button>
-                                    </div>
-                                </div>
-                            `).join('')}
-                        </div>
+                    ` : ''}
+
+                    <div class="delivery-boy-actions">
+                        <button class="btn btn-sm btn-outline-primary" onclick="window.deliveryDashboard.viewAgentOrders('${deliveryBoy.id}')">
+                            View Orders
+                        </button>
                     </div>
                 </div>
             `;
@@ -322,7 +242,7 @@ class DeliveryDashboard {
                     <td colspan="5" class="text-center">
                         <div class="empty-state">
                             <h6>No Orders Ready for Delivery</h6>
-                            <p>All picked orders have been assigned to delivery boys.</p>
+                            <p>No orders are currently picked and ready for delivery assignment.</p>
                         </div>
                     </td>
                 </tr>
@@ -330,166 +250,375 @@ class DeliveryDashboard {
             return;
         }
 
-        tbody.innerHTML = this.readyOrders.map(order => `
-            <tr>
-                <td>${order.order_id}</td>
-                <td>${order.customer_name || 'N/A'}</td>
-                <td>${order.delivery_address || 'N/A'}</td>
-                <td>
-                    <span class="status-badge ${order.current_status?.toLowerCase() || 'unknown'}">
-                        ${order.current_status || 'Unknown'}
-                    </span>
-                </td>
-                <td>
-                    <button class="btn btn-sm btn-primary" onclick="window.deliveryDashboard.assignSingleOrder('${order.order_id}')">
-                        Assign
-                    </button>
-                </td>
-            </tr>
-        `).join('');
+        tbody.innerHTML = this.readyOrders.map(order => {
+            const itemCount = order.order_items ? order.order_items.length : 0;
+            const deliveryAddress = order.delivery_location ? 
+                (order.delivery_location.address || 'Address not available') : 'Address not available';
+            const currentStatus = order.current_status || 'Picked';
+
+            return `
+                <tr>
+                    <td>
+                        <strong>${order.order_id}</strong>
+                        <br>
+                        <small class="text-muted">Status: ${currentStatus}</small>
+                    </td>
+                    <td>
+                        <div class="address-info">
+                            <strong>${deliveryAddress}</strong>
+                            <br>
+                            <small class="text-muted">📍 ${order.pincode || 'N/A'}</small>
+                        </div>
+                    </td>
+                    <td>
+                        <span class="status-badge ${currentStatus.toLowerCase().replace(/\s+/g, '-')}">
+                            ${currentStatus}
+                        </span>
+                        <br>
+                        <small class="text-muted">${itemCount} items</small>
+                    </td>
+                    <td>
+                        <div class="order-actions">
+                            <button class="btn btn-sm btn-primary" onclick="window.deliveryDashboard.viewOrderDetails('${order.order_id}')">
+                                View Items
+                            </button>
+                        </div>
+                    </td>
+                </tr>
+            `;
+        }).join('');
     }
 
-    async assignDeliveryOrders() {
+    async viewOrderDetails(orderId) {
         if (this.isLoading) return;
 
         try {
-            console.log('🚀 Starting delivery assignment...');
             this.showLoading();
             
-            const maxDistance = document.getElementById('max-distance')?.value || 1.0;
+            // Find the order in our current data
+            const order = this.readyOrders.find(o => o.order_id === orderId);
             
-            const response = await this.makeApiCall('/delivery/assign', {
-                method: 'POST',
-                body: JSON.stringify({
-                    max_distance_km: parseFloat(maxDistance)
-                })
-            });
-
-            console.log('📊 Assignment response:', response);
-
-            if (response.success) {
-                this.showToast(
-                    `Successfully assigned ${response.total_orders_assigned || 0} orders to delivery boys`, 
-                    'success'
-                );
-                await this.refreshDeliveryData();
+            if (order) {
+                this.showOrderDetailsModal(order);
             } else {
-                this.showToast(response.error || response.message || 'Failed to assign orders', 'error');
+                this.showToast('Order not found', 'error');
             }
 
         } catch (error) {
-            console.error('❌ Error assigning delivery orders:', error);
-            this.showToast('Failed to assign delivery orders. Check console for details.', 'error');
+            console.error('❌ Error getting order details:', error);
+            this.showToast('Failed to get order details', 'error');
         } finally {
             this.hideLoading();
         }
     }
 
-    async assignSingleOrder(orderId) {
+    async viewAgentOrders(agentId) {
         if (this.isLoading) return;
 
         try {
             this.showLoading();
             
-            const response = await this.makeApiCall('/delivery/assign-single', {
-                method: 'POST',
-                body: JSON.stringify({
-                    order_id: orderId
-                })
-            });
+            const response = await this.makeApiCall(`/delivery/agent/${agentId}/orders`);
 
             if (response.success) {
-                this.showToast(`Order ${orderId} assigned successfully`, 'success');
-                await this.refreshDeliveryData();
+                this.showAgentOrdersModal(response.data);
             } else {
-                this.showToast(response.error || response.message || 'Failed to assign order', 'error');
+                this.showToast(response.message || 'Failed to get agent orders', 'error');
             }
 
         } catch (error) {
-            console.error('❌ Error assigning single order:', error);
-            this.showToast('Failed to assign order', 'error');
+            console.error('❌ Error getting agent orders:', error);
+            this.showToast('Failed to get agent orders', 'error');
         } finally {
             this.hideLoading();
         }
     }
 
-    async resetDeliveryAssignments() {
-        if (this.isLoading) return;
+    showOrderDetailsModal(order) {
+        const items = order.order_items || [];
+        
+        const modalContent = `
+            <div class="modal fade" id="orderDetailsModal" tabindex="-1">
+                <div class="modal-dialog modal-lg">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h5 class="modal-title">Order Details - ${order.order_id}</h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                        </div>
+                        <div class="modal-body">
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <div class="order-info">
+                                        <h6>Order Information</h6>
+                                        <p><strong>Order ID:</strong> ${order.order_id}</p>
+                                        <p><strong>Status:</strong> <span class="badge bg-info">${order.current_status}</span></p>
+                                        <p><strong>Total Items:</strong> ${items.length}</p>
+                                        <p><strong>Pincode:</strong> ${order.pincode || 'N/A'}</p>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="delivery-info">
+                                        <h6>Delivery Information</h6>
+                                        <p><strong>Address:</strong> ${order.delivery_location && order.delivery_location.address ? order.delivery_location.address : 'N/A'}</p>
+                                        <p><strong>Coordinates:</strong> ${order.delivery_location && order.delivery_location.coordinates ? `${order.delivery_location.coordinates.lat}, ${order.delivery_location.coordinates.lng}` : 'N/A'}</p>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <div class="items-info mt-3">
+                                <h6>Order Items</h6>
+                                <div class="table-responsive">
+                                    <table class="table table-sm">
+                                        <thead>
+                                            <tr>
+                                                <th>Item</th>
+                                                <th>Quantity</th>
+                                                <th>Details</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            ${items.map(item => `
+                                                <tr>
+                                                    <td>${item.item_name || item.name || 'Unknown Item'}</td>
+                                                    <td>${item.quantity || 1}</td>
+                                                    <td>${item.description || 'No description'}</td>
+                                                </tr>
+                                            `).join('')}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `;
 
-        if (!confirm('Are you sure you want to reset all delivery assignments? This will unassign all orders from delivery boys.')) {
-            return;
+        // Remove existing modal if any
+        const existingModal = document.getElementById('orderDetailsModal');
+        if (existingModal) {
+            existingModal.remove();
         }
+
+        // Add modal to body
+        document.body.insertAdjacentHTML('beforeend', modalContent);
+
+        // Show modal
+        const modal = new bootstrap.Modal(document.getElementById('orderDetailsModal'));
+        modal.show();
+    }
+
+    showAgentOrdersModal(agentData) {
+        const modalContent = `
+            <div class="modal fade" id="agentOrdersModal" tabindex="-1">
+                <div class="modal-dialog modal-lg">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h5 class="modal-title">Agent Orders - ${agentData.agent_name}</h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                        </div>
+                        <div class="modal-body">
+                            <div class="row">
+                                <div class="col-md-12">
+                                    <div class="agent-info">
+                                        <h6>Agent Information</h6>
+                                        <p><strong>Agent ID:</strong> ${agentData.agent_id}</p>
+                                        <p><strong>Name:</strong> ${agentData.agent_name}</p>
+                                        <p><strong>Status:</strong> <span class="badge ${agentData.status === 'available' ? 'bg-success' : 'bg-warning'}">${agentData.status}</span></p>
+                                        <p><strong>Total Orders:</strong> ${agentData.total_orders}</p>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <div class="orders-info mt-3">
+                                <h6>Assigned Orders</h6>
+                                ${agentData.assigned_orders.length > 0 ? `
+                                    <div class="table-responsive">
+                                        <table class="table table-sm">
+                                            <thead>
+                                                <tr>
+                                                    <th>Order ID</th>
+                                                    <th>Status</th>
+                                                    <th>Items</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                ${agentData.orders_info.map(orderInfo => `
+                                                    <tr>
+                                                        <td>${orderInfo.order_id}</td>
+                                                        <td><span class="badge bg-info">${orderInfo.order_data.current_status || 'N/A'}</span></td>
+                                                        <td>${orderInfo.order_data.order_items ? orderInfo.order_data.order_items.length : 0} items</td>
+                                                    </tr>
+                                                `).join('')}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                ` : '<p class="text-muted">No orders assigned to this agent.</p>'}
+                            </div>
+                        </div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `;
+
+        // Remove existing modal if any
+        const existingModal = document.getElementById('agentOrdersModal');
+        if (existingModal) {
+            existingModal.remove();
+        }
+
+        // Add modal to body
+        document.body.insertAdjacentHTML('beforeend', modalContent);
+
+        // Show modal
+        const modal = new bootstrap.Modal(document.getElementById('agentOrdersModal'));
+        modal.show();
+    }
+
+    // New methods for clustering functionality
+    async clusterOrders() {
+        if (this.isLoading) return;
 
         try {
             this.showLoading();
             
-            const response = await this.makeApiCall('/delivery/reset', {
+            const response = await this.makeApiCall('/delivery/cluster-orders', {
                 method: 'POST'
             });
 
             if (response.success) {
-                this.showToast('All delivery assignments have been reset', 'success');
-                await this.refreshDeliveryData();
+                this.showToast('Orders clustered successfully', 'success');
+                this.refreshDeliveryData(); // Refresh the display
             } else {
-                this.showToast(response.error || response.message || 'Failed to reset assignments', 'error');
+                this.showToast(response.message || 'Failed to cluster orders', 'error');
             }
 
         } catch (error) {
-            console.error('❌ Error resetting delivery assignments:', error);
-            this.showToast('Failed to reset delivery assignments', 'error');
+            console.error('❌ Error clustering orders:', error);
+            this.showToast('Failed to cluster orders', 'error');
         } finally {
             this.hideLoading();
         }
     }
 
-    async updateDeliveryStatus(orderId, status) {
-        if (this.isLoading) return;
-
-        try {
-            const response = await this.makeApiCall('/delivery/update-status', {
-                method: 'POST',
-                body: JSON.stringify({
-                    order_id: orderId,
-                    status: status
-                })
-            });
-
-            if (response.success) {
-                this.showToast(`Order ${orderId} status updated to ${status}`, 'success');
-                await this.refreshDeliveryData();
-            } else {
-                this.showToast(response.error || response.message || 'Failed to update status', 'error');
-            }
-
-        } catch (error) {
-            console.error('❌ Error updating delivery status:', error);
-            this.showToast('Failed to update delivery status', 'error');
-        }
-    }
-
-    async refreshDeliveryAgents() {
+    async assignClusters() {
         if (this.isLoading) return;
 
         try {
             this.showLoading();
             
-            const response = await this.makeApiCall('/delivery/refresh', {
+            const response = await this.makeApiCall('/delivery/assign-clusters', {
                 method: 'POST'
             });
 
             if (response.success) {
-                this.showToast('Delivery agents refreshed successfully', 'success');
-                await this.refreshDeliveryData();
+                this.showToast('Clusters assigned successfully', 'success');
+                this.refreshDeliveryData(); // Refresh the display
             } else {
-                this.showToast(response.error || response.message || 'Failed to refresh agents', 'error');
+                this.showToast(response.message || 'Failed to assign clusters', 'error');
             }
 
         } catch (error) {
-            console.error('❌ Error refreshing delivery agents:', error);
-            this.showToast('Failed to refresh delivery agents', 'error');
+            console.error('❌ Error assigning clusters:', error);
+            this.showToast('Failed to assign clusters', 'error');
         } finally {
             this.hideLoading();
         }
+    }
+
+    async getClusters() {
+        if (this.isLoading) return;
+
+        try {
+            this.showLoading();
+            
+            const response = await this.makeApiCall('/delivery/clusters');
+
+            if (response.success) {
+                this.showClustersModal(response.data);
+            } else {
+                this.showToast(response.message || 'Failed to get clusters', 'error');
+            }
+
+        } catch (error) {
+            console.error('❌ Error getting clusters:', error);
+            this.showToast('Failed to get clusters', 'error');
+        } finally {
+            this.hideLoading();
+        }
+    }
+
+    showClustersModal(clustersData) {
+        const modalContent = `
+            <div class="modal fade" id="clustersModal" tabindex="-1">
+                <div class="modal-dialog modal-xl">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h5 class="modal-title">Delivery Clusters</h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                        </div>
+                        <div class="modal-body">
+                            <div class="row">
+                                <div class="col-md-12">
+                                    <div class="clusters-info">
+                                        <h6>Clusters Overview</h6>
+                                        <p><strong>Total Clusters:</strong> ${clustersData.total_clusters}</p>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <div class="clusters-details mt-3">
+                                <h6>Cluster Details</h6>
+                                <div class="table-responsive">
+                                    <table class="table table-sm">
+                                        <thead>
+                                            <tr>
+                                                <th>Cluster ID</th>
+                                                <th>Orders</th>
+                                                <th>Agent</th>
+                                                <th>Status</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            ${clustersData.clusters.map((cluster, index) => `
+                                                <tr>
+                                                    <td>Cluster ${index + 1}</td>
+                                                    <td>${cluster.orders ? cluster.orders.length : 0} orders</td>
+                                                    <td>${cluster.agent_id || 'Unassigned'}</td>
+                                                    <td><span class="badge ${cluster.agent_id ? 'bg-success' : 'bg-warning'}">${cluster.agent_id ? 'Assigned' : 'Pending'}</span></td>
+                                                </tr>
+                                            `).join('')}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `;
+
+        // Remove existing modal if any
+        const existingModal = document.getElementById('clustersModal');
+        if (existingModal) {
+            existingModal.remove();
+        }
+
+        // Add modal to body
+        document.body.insertAdjacentHTML('beforeend', modalContent);
+
+        // Show modal
+        const modal = new bootstrap.Modal(document.getElementById('clustersModal'));
+        modal.show();
     }
 
     destroy() {
@@ -499,22 +628,6 @@ class DeliveryDashboard {
 }
 
 // Global functions for delivery dashboard
-window.assignDeliveryOrders = function() {
-    if (window.deliveryDashboard) {
-        window.deliveryDashboard.assignDeliveryOrders();
-    } else {
-        console.error('❌ Delivery dashboard not initialized');
-    }
-};
-
-window.resetDeliveryAssignments = function() {
-    if (window.deliveryDashboard) {
-        window.deliveryDashboard.resetDeliveryAssignments();
-    } else {
-        console.error('❌ Delivery dashboard not initialized');
-    }
-};
-
 window.refreshDeliveryData = function() {
     if (window.deliveryDashboard) {
         window.deliveryDashboard.refreshDeliveryData();
@@ -523,25 +636,33 @@ window.refreshDeliveryData = function() {
     }
 };
 
-window.assignSingleOrder = function(orderId) {
+window.viewOrderDetails = function(orderId) {
     if (window.deliveryDashboard) {
-        window.deliveryDashboard.assignSingleOrder(orderId);
+        window.deliveryDashboard.viewOrderDetails(orderId);
     } else {
         console.error('❌ Delivery dashboard not initialized');
     }
 };
 
-window.updateDeliveryStatus = function(orderId, status) {
+window.clusterOrders = function() {
     if (window.deliveryDashboard) {
-        window.deliveryDashboard.updateDeliveryStatus(orderId, status);
+        window.deliveryDashboard.clusterOrders();
     } else {
         console.error('❌ Delivery dashboard not initialized');
     }
 };
 
-window.refreshDeliveryAgents = function() {
+window.assignClusters = function() {
     if (window.deliveryDashboard) {
-        window.deliveryDashboard.refreshDeliveryAgents();
+        window.deliveryDashboard.assignClusters();
+    } else {
+        console.error('❌ Delivery dashboard not initialized');
+    }
+};
+
+window.getClusters = function() {
+    if (window.deliveryDashboard) {
+        window.deliveryDashboard.getClusters();
     } else {
         console.error('❌ Delivery dashboard not initialized');
     }
