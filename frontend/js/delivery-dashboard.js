@@ -92,7 +92,9 @@ class DeliveryDashboard {
             console.log(`📡 API Response Status: ${response.status}`);
 
             if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
+                const errorText = await response.text();
+                console.error(`❌ API Error Response: ${errorText}`);
+                throw new Error(`HTTP error! status: ${response.status} - ${errorText}`);
             }
 
             const data = await response.json();
@@ -700,5 +702,18 @@ function initializeDeliveryDashboard() {
 
 // Export for use in main dashboard
 window.initializeDeliveryDashboard = initializeDeliveryDashboard;
+
+// Global functions for integration
+window.autoAssignOrders = function() {
+    if (window.deliveryDashboard) {
+        window.deliveryDashboard.clusterOrders();
+    }
+};
+
+window.refreshDeliveryData = function() {
+    if (window.deliveryDashboard) {
+        window.deliveryDashboard.refreshDeliveryData();
+    }
+};
 
 console.log('✅ Delivery Dashboard JS loaded successfully');

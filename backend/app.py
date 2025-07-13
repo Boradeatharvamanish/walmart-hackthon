@@ -7,6 +7,20 @@ import os
 import json
 import threading
 import time
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+from route_optimizer import (
+    generate_optimized_routes_for_busy_agents,
+    generate_tsp_route,
+    reroute_if_traffic,
+    simulate_all_agents_movement,
+    start_route_simulation,
+    stop_route_simulation,
+    get_enhanced_live_tracking_data,
+    route_optimizer_active,
+    simulate_single_agent_movement,
+    DARK_STORE_LOCATION,
+)
 
 # Import the separate manager classes
 from picking_manager import PickingManager
@@ -48,7 +62,9 @@ def initialize_firebase():
 
         # Option 1: Try service account key files in order of preference
         service_account_files = [
-            "serviceAccountKey.json",
+            "../../serviceAccountKey.json",  # Root directory (two levels up)
+            "../serviceAccountKey.json",     # Parent directory
+            "serviceAccountKey.json",        # Current directory
             "firebase-service-account.json",
             "service-account-key.json",
             "firebase-adminsdk.json",  # Common alternative name
@@ -208,28 +224,85 @@ def test_firebase_connection():
 
 
 def start_delivery_monitoring():
-    """Start monitoring for picked orders in a separate thread"""
-    print("🚚 Starting delivery monitoring thread...")
-
+    """Start delivery monitoring in background thread"""
     def monitor_thread():
         try:
-            if firebase_initialized and delivery_manager:
-                # Start the watcher with 30-second intervals
-                delivery_manager.watch_and_assign(interval=30)
-            else:
-                print(
-                    "❌ Cannot start monitoring - Firebase not initialized or delivery manager not available"
-                )
+            print("🚚 Starting delivery monitoring thread...")
+            delivery_manager.watch_and_assign(interval=30)  # Check every 30 seconds
         except Exception as e:
-            print(f"❌ Error in delivery monitoring thread: {e}")
-            import traceback
+            print(f"❌ Error in delivery monitoring: {e}")
+        finally:
+            print("🛑 Delivery monitoring stopped")
+    
+    delivery_thread = threading.Thread(target=monitor_thread, daemon=True)
+    delivery_thread.start()
 
-            traceback.print_exc()
+def start_picking_monitoring():
+    """Start picking monitoring in background thread"""
+    def monitor_thread():
+        try:
+            print("🛒 Starting picking monitoring thread...")
+            while True:
+                try:
+                    # Auto-assign orders to available pickers
+                    status = picking_manager.get_next_available_order()
+                    if status["success"] and status["can_assign_more"]:
+                        print(f"[Picking Monitor] Auto-assigning orders...")
+                        # Try to assign one order at a time
+                        available_orders = status["available_orders"]
+                        if available_orders:
+                            order_id = available_orders[0]["order_id"]
+                            result = picking_manager.assign_order_to_picker(order_id)
+                            if result["success"]:
+                                print(f"[Picking Monitor] Auto-assigned order {order_id}")
+                            else:
+                                print(f"[Picking Monitor] Failed to assign order {order_id}: {result['message']}")
+                    else:
+                        print("[Picking Monitor] No orders to assign or no available pickers")
+                    
+                    time.sleep(30)  # Check every 30 seconds
+                except Exception as e:
+                    print(f"[Picking Monitor] Error: {e}")
+                    time.sleep(30)
+        except Exception as e:
+            print(f"❌ Error in picking monitoring: {e}")
+        finally:
+            print("🛑 Picking monitoring stopped")
+    
+    picking_thread = threading.Thread(target=monitor_thread, daemon=True)
+    picking_thread.start()
 
-    # Start monitoring in a daemon thread
-    monitor_thread = threading.Thread(target=monitor_thread, daemon=True)
-    monitor_thread.start()
-    print("✅ Delivery monitoring thread started")
+
+def start_route_simulation():
+    """Start route simulation in background thread"""
+    global route_optimizer_active, simulation_thread
+
+    if route_optimizer_active:
+        return {"success": False, "message": "Route simulation already running"}
+
+    def run_simulation():
+        global route_optimizer_active
+        route_optimizer_active = True
+        try:
+            print("🚗 Starting route simulation...")
+            simulate_all_agents_movement(step_delay=2, proximity_threshold_km=0.05)
+        except Exception as e:
+            print(f"❌ Error in route simulation: {e}")
+        finally:
+            route_optimizer_active = False
+            print("🛑 Route simulation stopped")
+
+    simulation_thread = threading.Thread(target=run_simulation, daemon=True)
+    simulation_thread.start()
+
+    return {"success": True, "message": "Route simulation started"}
+
+
+def stop_route_simulation():
+    """Stop route simulation"""
+    global route_optimizer_active
+    route_optimizer_active = False
+    return {"success": True, "message": "Route simulation stopped"}
 
 
 # Initialize Firebase
@@ -248,9 +321,14 @@ picking_manager = PickingManager()
 delivery_manager = DeliveryManager()
 print("✅ Managers initialized successfully")
 
+route_optimizer_active = False
+simulation_thread = None
+executor = ThreadPoolExecutor(max_workers=2)
+
 # Start delivery monitoring if Firebase is initialized
 if firebase_initialized:
     start_delivery_monitoring()
+    start_picking_monitoring() # Start picking monitoring as well
 
 
 @app.route("/")
@@ -262,14 +340,19 @@ def home():
 # === PICKING MANAGEMENT ROUTES ===
 @app.route("/api/picking/status", methods=["GET"])
 def get_picking_status():
-    """Get current picking status"""
+    """Get picker assignments and order details for frontend"""
     try:
         if not firebase_initialized:
             return jsonify({"success": False, "error": "Firebase not initialized"}), 500
-
-        return jsonify(
-            {"success": True, "data": picking_manager.get_picker_assignments()}
-        )
+        assignments = picking_manager.get_picker_assignments()
+        # Attach order details to each picker if active
+        orders_ref = db.reference("orders")
+        orders = orders_ref.get() or {}
+        for picker in assignments["pickers"]:
+            if picker.get("active") and picker.get("order_id"):
+                order = orders.get(picker["order_id"])
+                picker["order_details"] = order if order else {}
+        return jsonify(assignments)
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
@@ -312,31 +395,18 @@ def assign_order():
 
 
 @app.route("/api/picking/progress", methods=["POST"])
-def update_progress():
-    """Update picker progress"""
+def update_picker_progress():
+    """Update picker progress (frontend calls this to update progress bar)"""
     try:
         if not firebase_initialized:
             return jsonify({"success": False, "error": "Firebase not initialized"}), 500
-
-        data = request.get_json()
+        data = request.get_json() or {}
         picker_id = data.get("picker_id")
         progress = data.get("progress")
-
-        if picker_id is None or progress is None:
-            return (
-                jsonify(
-                    {"success": False, "error": "picker_id and progress are required"}
-                ),
-                400,
-            )
-
+        if not picker_id or progress is None:
+            return jsonify({"success": False, "error": "picker_id and progress required"}), 400
         result = picking_manager.update_picker_progress(picker_id, progress)
-
-        if result["success"]:
-            return jsonify(result)
-        else:
-            return jsonify(result), 400
-
+        return jsonify(result)
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
@@ -372,72 +442,13 @@ def auto_assign_orders():
         if not firebase_initialized:
             return jsonify({"success": False, "error": "Firebase not initialized"}), 500
 
-        # Get current status
-        status = picking_manager.get_next_available_order()
-        if not status["success"]:
-            return jsonify(status), 500
-
-        available_orders = status["available_orders"]
-        available_pickers = status["available_pickers"]
-
-        if available_pickers == 0:
-            return (
-                jsonify(
-                    {
-                        "success": False,
-                        "message": "No available pickers for assignment",
-                        "status": status,
-                    }
-                ),
-                400,
-            )
-
-        if len(available_orders) == 0:
-            return (
-                jsonify(
-                    {
-                        "success": False,
-                        "message": "No orders available for assignment",
-                        "status": status,
-                    }
-                ),
-                400,
-            )
-
-        # Determine how many orders to assign
-        orders_to_assign = min(len(available_orders), available_pickers)
-
-        assignments = []
-        failed_assignments = []
-
-        # Assign orders one by one
-        for i in range(orders_to_assign):
-            order_id = available_orders[i]["order_id"]
-            result = picking_manager.assign_order_to_picker(order_id)
-
-            if result["success"]:
-                assignments.append(result)
-            else:
-                failed_assignments.append(
-                    {"order_id": order_id, "error": result["message"]}
-                )
-
-        # Get updated status
-        final_status = picking_manager.get_next_available_order()
-
-        return jsonify(
-            {
-                "success": True,
-                "assignments": assignments,
-                "failed_assignments": failed_assignments,
-                "assigned_count": len(assignments),
-                "failed_count": len(failed_assignments),
-                "final_status": (
-                    final_status["data"] if final_status["success"] else None
-                ),
-                "message": f"Successfully assigned {len(assignments)} orders to pickers",
-            }
-        )
+        # Use the new auto_assign_orders method from picking manager
+        result = picking_manager.auto_assign_orders()
+        
+        if result["success"]:
+            return jsonify(result)
+        else:
+            return jsonify(result), 400
 
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
@@ -776,7 +787,445 @@ def refresh_delivery_data():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
-# === GENERAL UTILITY ROUTES ===
+@app.route("/api/routes/generate-all", methods=["POST"])
+def generate_all_routes():
+    """Generate optimized routes for all busy delivery agents"""
+    try:
+        if not firebase_initialized:
+            return jsonify({"success": False, "error": "Firebase not initialized"}), 500
+
+        # Generate routes for all busy agents
+        optimized_routes = generate_optimized_routes_for_busy_agents()
+
+        if not optimized_routes:
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "message": "No busy agents found or no routes generated",
+                    }
+                ),
+                400,
+            )
+
+        # Store routes in Firebase for live tracking
+        routes_ref = db.reference("optimized_routes")
+        routes_ref.update(optimized_routes)
+
+        return jsonify(
+            {
+                "success": True,
+                "message": f"Generated routes for {len(optimized_routes)} agents",
+                "routes": optimized_routes,
+                "agents_count": len(optimized_routes),
+            }
+        )
+
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/routes/agent/<agent_id>", methods=["GET"])
+def get_agent_route(agent_id):
+    """Get optimized route for a specific agent"""
+    try:
+        if not firebase_initialized:
+            return jsonify({"success": False, "error": "Firebase not initialized"}), 500
+
+        # Get agent data
+        agent_ref = db.reference(f"delivery_agents/{agent_id}")
+        agent_data = agent_ref.get()
+
+        if not agent_data:
+            return (
+                jsonify({"success": False, "message": f"Agent {agent_id} not found"}),
+                404,
+            )
+
+        if agent_data.get("status") != "busy":
+            return (
+                jsonify({"success": False, "message": f"Agent {agent_id} is not busy"}),
+                400,
+            )
+
+        # Get assigned orders and generate route
+        assigned_orders = agent_data.get("order_assigned", [])
+        if not assigned_orders:
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "message": f"No orders assigned to agent {agent_id}",
+                    }
+                ),
+                400,
+            )
+
+        # Get delivery locations
+        delivery_locations = []
+        for order_id in assigned_orders:
+            order = db.reference(f"orders/{order_id}").get()
+            if order and "delivery_location" in order:
+                delivery_locations.append(order["delivery_location"])
+
+        if not delivery_locations:
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "message": "No delivery locations found for assigned orders",
+                    }
+                ),
+                400,
+            )
+
+        # Generate route
+        origin = agent_data.get("current_location", DARK_STORE_LOCATION)
+        route_points = generate_tsp_route(origin, delivery_locations)
+
+        return jsonify(
+            {
+                "success": True,
+                "agent_id": agent_id,
+                "agent_name": agent_data.get("delivery_agent_name"),
+                "route_points": route_points,
+                "total_points": len(route_points),
+                "delivery_locations": delivery_locations,
+                "assigned_orders": assigned_orders,
+            }
+        )
+
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/routes/reroute/<agent_id>", methods=["POST"])
+def reroute_agent(agent_id):
+    """Reroute an agent based on traffic conditions"""
+    try:
+        if not firebase_initialized:
+            return jsonify({"success": False, "error": "Firebase not initialized"}), 500
+
+        # Get current route from Firebase
+        routes_ref = db.reference(f"optimized_routes/{agent_id}")
+        old_route = routes_ref.get()
+
+        if not old_route:
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "message": f"No existing route found for agent {agent_id}",
+                    }
+                ),
+                404,
+            )
+
+        # Get delay threshold from request
+        data = request.get_json() or {}
+        delay_threshold = data.get("delay_threshold_minutes", 5)
+
+        # Reroute if traffic detected
+        new_route = reroute_if_traffic(agent_id, old_route, delay_threshold)
+
+        # Update route in Firebase
+        routes_ref.set(new_route)
+
+        route_changed = new_route != old_route
+
+        return jsonify(
+            {
+                "success": True,
+                "agent_id": agent_id,
+                "route_changed": route_changed,
+                "new_route": new_route,
+                "total_points": len(new_route),
+                "delay_threshold": delay_threshold,
+                "message": (
+                    "Route updated successfully"
+                    if route_changed
+                    else "No rerouting needed"
+                ),
+            }
+        )
+
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/routes/live-tracking", methods=["GET"])
+def get_live_tracking_data():
+    """Get live tracking data for all delivery agents"""
+    try:
+        if not firebase_initialized:
+            return jsonify({"success": False, "error": "Firebase not initialized"}), 500
+
+        # Get all delivery agents
+        agents_ref = db.reference("delivery_agents")
+        all_agents = agents_ref.get() or {}
+
+        # Get optimized routes
+        routes_ref = db.reference("optimized_routes")
+        all_routes = routes_ref.get() or {}
+
+        live_tracking_data = []
+
+        for agent_id, agent_data in all_agents.items():
+            if agent_data.get("status") == "busy":
+                agent_route = all_routes.get(agent_id, [])
+
+                # Get assigned orders for delivery locations
+                assigned_orders = agent_data.get("order_assigned", [])
+                delivery_locations = []
+
+                for order_id in assigned_orders:
+                    order = db.reference(f"orders/{order_id}").get()
+                    if order and "delivery_location" in order:
+                        delivery_locations.append(
+                            {
+                                "order_id": order_id,
+                                "location": order["delivery_location"],
+                                "status": order.get("current_status", "unknown"),
+                            }
+                        )
+
+                tracking_info = {
+                    "agent_id": agent_data.get("delivery_agent_id"),
+                    "agent_name": agent_data.get("delivery_agent_name"),
+                    "current_location": agent_data.get(
+                        "current_location", DARK_STORE_LOCATION
+                    ),
+                    "status": agent_data.get("status"),
+                    "route_points": agent_route,
+                    "delivery_locations": delivery_locations,
+                    "assigned_orders": assigned_orders,
+                    "total_deliveries": len(assigned_orders),
+                }
+
+                live_tracking_data.append(tracking_info)
+
+        return jsonify(
+            {
+                "success": True,
+                "live_tracking": live_tracking_data,
+                "total_active_agents": len(live_tracking_data),
+                "timestamp": datetime.now().isoformat(),
+            }
+        )
+
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+# NEW ENHANCED API ROUTES - ADD THESE TO YOUR app.py
+
+
+@app.route("/api/routes/live-tracking-enhanced", methods=["GET"])
+def get_enhanced_live_tracking():
+    """Get enhanced live tracking data with route visualization"""
+    try:
+        if not firebase_initialized:
+            return jsonify({"success": False, "error": "Firebase not initialized"}), 500
+
+        # Add debugging information
+        agents_ref = db.reference("delivery_agents")
+        agents_data = agents_ref.get() or {}
+        busy_agents = {
+            k: v for k, v in agents_data.items() if v.get("status") == "busy"
+        }
+
+        print(
+            f"[API] Enhanced live tracking - Total agents: {len(agents_data)}, Busy agents: {len(busy_agents)}"
+        )
+
+        result = get_enhanced_live_tracking_data()
+
+        # Add debugging info to response
+        if result.get("success"):
+            result["debug"] = {
+                "total_agents": len(agents_data),
+                "busy_agents": len(busy_agents),
+                "busy_agent_ids": list(busy_agents.keys()),
+            }
+
+        return jsonify(result)
+    except Exception as e:
+        print(f"[API] Error in enhanced live tracking: {str(e)}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/routes/generate-and-simulate", methods=["POST"])
+def generate_and_simulate_routes():
+    """Generate optimized routes and start simulation"""
+    try:
+        if not firebase_initialized:
+            return jsonify({"success": False, "error": "Firebase not initialized"}), 500
+
+        print("[API] Generating and simulating routes...")
+
+        # Generate routes for all busy agents
+        optimized_routes = generate_optimized_routes_for_busy_agents()
+
+        if not optimized_routes:
+            print("[API] No busy agents found for route generation")
+            return jsonify({"success": False, "message": "No busy agents found"}), 400
+
+        # Store routes in Firebase
+        routes_ref = db.reference("optimized_routes")
+        routes_ref.update(optimized_routes)
+        print(f"[API] Stored {len(optimized_routes)} routes in Firebase")
+
+        # Start simulation if not already running
+        if not route_optimizer_active:
+            start_result = start_route_simulation()
+            if not start_result["success"]:
+                return jsonify(start_result), 400
+            print("[API] Started route simulation")
+        else:
+            print("[API] Route simulation already active")
+
+        return jsonify(
+            {
+                "success": True,
+                "message": f"Generated and simulating routes for {len(optimized_routes)} agents",
+                "routes_count": len(optimized_routes),
+                "simulation_started": True,
+                "routes": optimized_routes,  # Include route data for debugging
+            }
+        )
+
+    except Exception as e:
+        print(f"[API] Error in generate_and_simulate_routes: {str(e)}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/routes/simulation/start", methods=["POST"])
+def start_simulation():
+    """Start route simulation for all busy agents"""
+    try:
+        if not firebase_initialized:
+            return jsonify({"success": False, "error": "Firebase not initialized"}), 500
+
+        result = start_route_simulation()
+
+        if result["success"]:
+            return jsonify(
+                {
+                    "success": True,
+                    "message": "Route simulation started successfully",
+                    "simulation_active": route_optimizer_active,
+                }
+            )
+        else:
+            return jsonify(result), 400
+
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/routes/simulation/stop", methods=["POST"])
+def stop_simulation():
+    """Stop route simulation"""
+    try:
+        result = stop_route_simulation()
+
+        return jsonify(
+            {
+                "success": True,
+                "message": "Route simulation stopped",
+                "simulation_active": route_optimizer_active,
+            }
+        )
+
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/routes/simulation/status", methods=["GET"])
+def get_simulation_status():
+    """Get current simulation status"""
+    try:
+        return jsonify(
+            {
+                "success": True,
+                "simulation_active": route_optimizer_active,
+                "timestamp": datetime.now().isoformat(),
+            }
+        )
+
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/routes/agent/<agent_id>/simulate", methods=["POST"])
+def simulate_agent_movement(agent_id):
+    """Simulate movement for a specific agent"""
+    try:
+        if not firebase_initialized:
+            return jsonify({"success": False, "error": "Firebase not initialized"}), 500
+
+        # Get simulation parameters
+        data = request.get_json() or {}
+        step_delay = data.get("step_delay", 2)
+        proximity_threshold = data.get("proximity_threshold_km", 0.05)
+
+        # Start simulation for the agent
+        result = simulate_single_agent_movement(
+            agent_id, step_delay, proximity_threshold
+        )
+
+        return jsonify(result)
+
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/routes/dashboard", methods=["GET"])
+def get_routes_dashboard():
+    """Get comprehensive route tracking dashboard data"""
+    try:
+        if not firebase_initialized:
+            return jsonify({"success": False, "error": "Firebase not initialized"}), 500
+
+        # Get enhanced live tracking data
+        live_data = get_enhanced_live_tracking_data()
+
+        # Get simulation status
+        simulation_status = {
+            "active": route_optimizer_active,
+            "timestamp": datetime.now().isoformat(),
+        }
+
+        # Get routes summary
+        routes_ref = db.reference("optimized_routes")
+        all_routes = routes_ref.get() or {}
+
+        routes_summary = {
+            "total_optimized_routes": len(all_routes),
+            "average_route_points": 0,
+        }
+
+        if all_routes:
+            total_points = sum(len(route) for route in all_routes.values())
+            routes_summary["average_route_points"] = total_points / len(all_routes)
+
+        return jsonify(
+            {
+                "success": True,
+                "dashboard": {
+                    "live_tracking": live_data.get("live_tracking", []),
+                    "simulation": simulation_status,
+                    "routes_summary": routes_summary,
+                    "active_agents": live_data.get("total_active_agents", 0),
+                    "timestamp": datetime.now().isoformat(),
+                },
+            }
+        )
+
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @app.route("/api/orders", methods=["GET"])
 def get_all_orders():
     """Get all orders from Firebase"""
@@ -787,7 +1236,21 @@ def get_all_orders():
         orders_ref = db.reference("orders")
         orders = orders_ref.get() or {}
 
-        return jsonify({"success": True, "orders": orders, "total_orders": len(orders)})
+        # Convert to list format for frontend
+        orders_list = []
+        for order_id, order_data in orders.items():
+            orders_list.append({
+                "id": order_id,
+                "order_id": order_data.get("order_id", order_id),
+                "items": ", ".join(order_data.get("order_items", [])),
+                "location": f"{order_data.get('delivery_location', {}).get('lat', 0):.3f}, {order_data.get('delivery_location', {}).get('lng', 0):.3f}",
+                "status": order_data.get("current_status", "unknown"),
+                "sla": order_data.get("sla", "N/A"),
+                "delivered_at": order_data.get("delivered_at", None)
+            })
+
+        return jsonify({"success": True, "orders": orders_list})
+
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
@@ -824,12 +1287,19 @@ def get_dashboard_data():
         picking_status = picking_manager.get_picker_assignments()
 
         # Get delivery status
-        delivery_status_response = get_delivery_status()
-        delivery_status = (
-            delivery_status_response[0].get_json()
-            if delivery_status_response[1] == 200
-            else {}
-        )
+        try:
+            delivery_status_response = get_delivery_status()
+            if isinstance(delivery_status_response, tuple):
+                delivery_status = (
+                    delivery_status_response[0].get_json()
+                    if delivery_status_response[1] == 200
+                    else {}
+                )
+            else:
+                delivery_status = delivery_status_response.get_json() if hasattr(delivery_status_response, 'get_json') else {}
+        except Exception as e:
+            print(f"Error getting delivery status: {e}")
+            delivery_status = {}
 
         # Get orders summary
         orders_summary = {"total_orders": 0, "firebase_connected": firebase_initialized}
@@ -853,20 +1323,73 @@ def get_dashboard_data():
             except Exception as e:
                 orders_summary["firebase_error"] = str(e)
 
-        return jsonify(
-            {
-                "success": True,
-                "timestamp": datetime.now().isoformat(),
-                "picking": picking_status,
-                "delivery": delivery_status,
-                "orders": orders_summary,
-                "monitoring": {
-                    "active": True,
-                    "available_agents": len(delivery_manager.available_agents),
-                    "orders_to_assign": len(delivery_manager.orders_to_assign),
-                },
-            }
-        )
+        response_data = {
+            "success": True,
+            "timestamp": datetime.now().isoformat(),
+            "picking": picking_status,
+            "delivery": delivery_status,
+            "orders": orders_summary,
+            "monitoring": {
+                "active": True,
+                "available_agents": len(delivery_manager.available_agents),
+                "orders_to_assign": len(delivery_manager.orders_to_assign),
+            },
+        }
+        
+        # Debug logging
+        print(f"📊 Dashboard API Response:")
+        print(f"  - Total orders: {orders_summary.get('total_orders', 0)}")
+        print(f"  - Orders by status: {orders_summary.get('orders_by_status', {})}")
+        print(f"  - Available agents: {len(delivery_manager.available_agents)}")
+        print(f"  - Orders to assign: {len(delivery_manager.orders_to_assign)}")
+        
+        return jsonify(response_data)
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/test/add-order", methods=["POST"])
+def add_test_order():
+    """Add a test order to Firebase for testing the automated workflow"""
+    try:
+        if not firebase_initialized:
+            return jsonify({"success": False, "error": "Firebase not initialized"}), 500
+
+        data = request.get_json() or {}
+        
+        # Generate a unique order ID
+        import random
+        order_id = f"ORD{random.randint(1000, 9999)}"
+        
+        # Create test order
+        test_order = {
+            "order_id": order_id,
+            "order_items": data.get("items", ["Test Item 1", "Test Item 2"]),
+            "delivery_location": data.get("delivery_location", {
+                "lat": 18.5204 + random.uniform(-0.01, 0.01),
+                "lng": 73.8567 + random.uniform(-0.01, 0.01)
+            }),
+            "current_status": "unpicked",
+            "customer_name": data.get("customer_name", "Test Customer"),
+            "city": data.get("city", "Pune"),
+            "state": data.get("state", "Maharashtra"),
+            "pincode": data.get("pincode", "411001"),
+            "order_date": datetime.now().strftime("%Y-%m-%d"),
+            "order_time": datetime.now().strftime("%H:%M:%S"),
+            "created_at": datetime.now().isoformat()
+        }
+        
+        # Add to Firebase
+        orders_ref = db.reference("orders")
+        orders_ref.child(order_id).set(test_order)
+        
+        return jsonify({
+            "success": True,
+            "message": f"Test order {order_id} added successfully",
+            "order_id": order_id,
+            "order_data": test_order
+        })
+        
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
